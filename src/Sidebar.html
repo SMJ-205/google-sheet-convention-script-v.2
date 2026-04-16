@@ -112,21 +112,14 @@
         </label>
       </div>
       <div class="status-text" id="lockStatusDesc">
-        Prevents structural column changes.
+        Protects column headers from restructuring.
       </div>
     </div>
     
     <div class="section">
-      <button onclick="registerSheet()" id="btnRegister">Register Current Sheet</button>
+      <button onclick="validateInputs()" id="btnValidate">Validate Unstamped Inputs</button>
       <div class="status-text">
-        Applies 'Visual Nudge' logic to highlight unverified rows in yellow.
-      </div>
-    </div>
-    
-    <div class="section">
-      <button onclick="validateRow()" id="btnValidate">Validate Active Row</button>
-      <div class="status-text">
-        Verifies row against schema rules before stamping with an updated_at timestamp.
+        Scans all new entries and tests them against the schema rules.
       </div>
     </div>
 
@@ -144,7 +137,7 @@
       function updateLockText(isLocked) {
         const desc = document.getElementById('lockStatusDesc');
         if (isLocked) {
-          desc.innerHTML = "<span style='color:#d32f2f; font-weight:bold;'>Locked:</span> Structural changes are blocked.";
+          desc.innerHTML = "<span style='color:#d32f2f; font-weight:bold;'>Locked:</span> Structural changes and inserts are globally blocked.";
         } else {
           desc.innerHTML = "<span style='color:#388e3c; font-weight:bold;'>Unlocked:</span> Migrations are allowed.";
         }
@@ -162,7 +155,7 @@
           .toggleSchemaLock(checkbox.checked);
       }
 
-      function registerSheet() {
+      function validateInputs() {
         showLoader();
         disableButtons(true);
         google.script.run
@@ -171,19 +164,7 @@
             disableButtons(false);
           })
           .withFailureHandler(handleError)
-          .registerSheet();
-      }
-
-      function validateRow() {
-        showLoader();
-        disableButtons(true);
-        google.script.run
-          .withSuccessHandler(function() {
-            hideLoader();
-            disableButtons(false);
-          })
-          .withFailureHandler(handleError)
-          .validateActiveRow();
+          .validateInputs();
       }
 
       function showLoader() {
@@ -195,7 +176,6 @@
       }
 
       function disableButtons(disabled) {
-        document.getElementById('btnRegister').disabled = disabled;
         document.getElementById('btnValidate').disabled = disabled;
         document.getElementById('schemaLockToggle').disabled = disabled;
       }
