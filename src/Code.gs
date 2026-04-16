@@ -94,6 +94,12 @@ function checkTriggers() {
     msg += '• ' + t.getHandlerFunction() + '  [' + type + ']\n';
   });
   msg += '\nSchema lock state: ' + (locked ? '🔒 LOCKED' : '🔓 UNLOCKED');
+
+  const crashErr = PropertiesService.getScriptProperties().getProperty('ONCHANGE_ERROR');
+  if (crashErr) {
+    msg += '\n\n⚠ LATEST CRASH LOG:\n' + crashErr;
+  }
+
   SpreadsheetApp.getUi().alert(msg);
 }
 
