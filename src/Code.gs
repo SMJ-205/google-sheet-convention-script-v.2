@@ -2,9 +2,6 @@
  * @OnlyCurrentDoc
  */
 
-/**
- * Creates menu on open
- */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Governance Engine')
@@ -26,8 +23,36 @@ function triggerGenerateSchema() {
 }
 
 /**
+ * Handle Structural Changes (Installable Trigger)
+ * Automatically invoked by Sheets when columns are inserted, removing them forcibly if unauthorized.
+ */
+function handleStructuralChange(e) {
+  try {
+    if (!isSchemaLocked()) return;
+    const sheet = SpreadsheetApp.getActiveSheet();
+    if (sheet.getName() === "Schema") return;
+
+    if (e.changeType === 'INSERT_COLUMN') {
+      const lastCol = sheet.getMaxColumns();
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      
+      let deleted = false;
+      // Seek backwards and delete columns that have entirely blank headers ( newly inserted ones )
+      for (let c = headers.length - 1; c >= 0; c--) {
+        if (headers[c] === "") {
+          sheet.deleteColumn(c + 1);
+          deleted = true;
+        }
+      }
+      SpreadsheetApp.getUi().alert("⛔ SCHEMA IS LOCKED\n\nInserting columns is forbidden! The unauthorized column was automatically deleted.");
+    } else if (e.changeType === 'REMOVE_COLUMN') {
+      SpreadsheetApp.getUi().alert("⛔ SCHEMA IS LOCKED\n\nDeleting columns is forbidden! Please press Undo (Ctrl+Z) immediately or risk corrupting your table.");
+    }
+  } catch(err) {}
+}
+
+/**
  * Instant Sanitization trigger - Auto runs on every edit
- * Handles cache busting for Schema updates + Type formatting.
  */
 function onEdit(e) {
   try {
@@ -35,23 +60,22 @@ function onEdit(e) {
     const sheet = e.range.getSheet();
     const sheetName = sheet.getName();
     
-    // 1. Explicitly Block Header Edits if Locked
+    // 1. Explicitly Block Header Edits if Locked with Hard Pop-Up
     if (e.range.getRow() === 1 && isSchemaLocked() && sheetName !== "Schema") {
       e.range.setValue(e.oldValue || ""); 
-      SpreadsheetApp.getActive().toast("Schema is LOCKED! Column names cannot be edited.");
+      SpreadsheetApp.getUi().alert("⛔ SCHEMA IS LOCKED\n\nColumn names cannot be edited or renamed natively. Please unlock the schema to modify structures.");
       return;
     }
     
     // 2. Cache-Bust if Schema Tab is explicitly edited manually
     if (sheetName === "Schema") {
-      const editedTable = sheet.getRange(e.range.getRow(), 1).getValue(); // Get Table Name from Col A
+      const editedTable = sheet.getRange(e.range.getRow(), 1).getValue(); 
       if (editedTable) {
         CacheService.getScriptCache().remove("schema_" + editedTable);
       }
       return; 
     }
     
-    // Safety exit for mass edits that could timeout simple triggers 
     if (e.range.getNumRows() > 1 || e.range.getNumColumns() > 1) return;
     
     const cache = CacheService.getScriptCache();
@@ -67,38 +91,40 @@ function onEdit(e) {
 
     const row = e.range.getRow();
     const col = e.range.getColumn();
-    if (row === 1) return; // Ignore headers (handled above)
+    if (row === 1) return; 
 
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
     const colName = headers[col - 1]; 
     if (!colName) return;
     
-    if (schema[colName]) {
-      const typeStr = schema[colName].type;
+    // Safety matching
+    const safeColName = colName.toString().trim();
+    
+    if (schema[safeColName]) {
+      const typeStr = schema[safeColName].type;
       const val = e.value !== undefined ? e.value : e.range.getValue(); 
       
       if (val !== undefined && val !== "") {
         const sanitized = standardizeLocales(val, typeStr);
         
-        // Null means parsing failed -> Revert because it breaks the Data Type requirement
+        // Throw strict visual UI alerts on mismatch natively checking 
         if (sanitized === null) {
           e.range.setValue(e.oldValue !== undefined ? e.oldValue : ""); 
-          SpreadsheetApp.getActive().toast(`Type Mismatch: Column '${colName}' strictly expects ${typeStr}. Change reverted.`, 'Governance Engine', 5);
+          SpreadsheetApp.getUi().alert(`⛔ DATA TYPE MISMATCH\n\nColumn '${safeColName}' strictly expects a ${typeStr}.\n\nThe input was rejected and undone.`);
         } 
-        // Valid coercion -> Replace with standard output
         else if (String(sanitized) !== String(val)) {
           e.range.setValue(sanitized);
         }
       }
     }
   } catch(err) {
-    // Fail silently in triggers so user is not annoyed, but it usually doesn't hit this.
+    // SpreadsheetApp.getUi().alert("Debug onEdit Error: " + err.message);
   }
 }
 
 /**
  * Standardizes Type Coercion. 
- * Returns NULL if the value is completely incompatible with the required type.
+ * Strengthened to explicitly reject numbers masquerading natively as timestamps.
  */
 function standardizeLocales(value, typeStr) {
   if (value === "") return "";
@@ -118,20 +144,26 @@ function standardizeLocales(value, typeStr) {
   else if (typeStr && typeStr.toUpperCase() === "TIMESTAMP") {
     if (Object.prototype.toString.call(value) === '[object Date]') return value;
     
-    const match = String(value).match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
-    if (match) {
-      let day = match[1].padStart(2, '0');
-      let month = match[2].padStart(2, '0');
-      let year = match[3];
-      if (year.length === 2) year = "20" + year;
-      let dateObj = new Date(`${year}-${month}-${day}`);
-      if (!isNaN(dateObj.getTime())) return dateObj;
+    const strVal = String(value).trim();
+    
+    // Strict enforcement: Dates must resemble standard format blocks otherwise JS native Date parser creates gibberish
+    const isDatePattern = /^(\d{1,4})[-\/](\d{1,2})[-\/](\d{1,4})(.*)?$/.test(strVal);
+    if (isDatePattern) {
+        const match = strVal.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
+        if (match) {
+          let day = match[1].padStart(2, '0');
+          let month = match[2].padStart(2, '0');
+          let year = match[3];
+          if (year.length === 2) year = "20" + year;
+          let dateObj = new Date(`${year}-${month}-${day}`);
+          if (!isNaN(dateObj.getTime())) return dateObj;
+        } else {
+          let dateObj = new Date(strVal);
+          if (!isNaN(dateObj.getTime())) return dateObj;
+        }
     }
     
-    let dateObj = new Date(value);
-    if (!isNaN(dateObj.getTime())) return dateObj;
-    
-    return null; 
+    return null; // Absolutely failed Timestamp validations natively
   }
   else if (typeStr && typeStr.toUpperCase() === "STRING") {
     return String(value);
@@ -140,10 +172,6 @@ function standardizeLocales(value, typeStr) {
   return value;
 }
 
-/**
- * Batch Validation Logic
- * Exclusively checks Mandatory and Unique limits. Data Types are omitted as requested.
- */
 function validateInputs() {
   const sheet = SpreadsheetApp.getActiveSheet();
   const sheetName = sheet.getName();
@@ -163,7 +191,7 @@ function validateInputs() {
   }
   
   if (!schema) {
-    SpreadsheetApp.getUi().alert("No schema definition found for this sheet in the 'Schema' tab.");
+    SpreadsheetApp.getUi().alert("No schema definition found for this sheet natively in the 'Schema' tab.");
     return false;
   }
   
@@ -180,7 +208,7 @@ function validateInputs() {
   const updatedAtColIdx = headers.indexOf(CONFIG.updated_at_header);
   
   if (updatedAtColIdx === -1) {
-    SpreadsheetApp.getUi().alert(`Column '${CONFIG.updated_at_header}' not found. Validation requires this column.`);
+    SpreadsheetApp.getUi().alert(`Column '${CONFIG.updated_at_header}' not found natively. Validation requires it.`);
     return false;
   }
   
@@ -206,18 +234,17 @@ function validateInputs() {
       
       for (let c = 0; c < headers.length; c++) {
         const colName = headers[c];
+        const safeName = colName ? colName.toString().trim() : "";
         let cellValue = rowData[c];
         
-        if (schema[colName]) {
-          // 1. Mandatory Check
-          if (schema[colName].is_mandatory && (cellValue === "" || cellValue === null || cellValue === undefined)) {
+        if (schema[safeName]) {
+          if (schema[safeName].is_mandatory && (cellValue === "" || cellValue === null || cellValue === undefined)) {
              rowValid = false;
-             errors.push(`Missing Mandatory: ${colName}`);
+             errors.push(`Missing Mandatory: ${safeName}`);
           }
           
           if (cellValue !== "" && cellValue !== null && cellValue !== undefined) {
-             // 2. Uniqueness Check ONLY
-             if (schema[colName].is_unique) {
+             if (schema[safeName].is_unique) {
                const cellValStr = String(cellValue).toLowerCase();
                const colVals = colDataIndexMap[colName];
                
@@ -227,7 +254,7 @@ function validateInputs() {
                }
                if (count > 1) {
                   rowValid = false;
-                  errors.push(`Duplicate: ${colName}='${cellValue}'`);
+                  errors.push(`Duplicate: ${safeName}='${cellValue}'`);
                }
              }
           }
@@ -239,7 +266,6 @@ function validateInputs() {
     }
   }
   
-  // Stamp Passed Rows
   if (passedRows.length > 0) {
     const timestamp = new Date();
     passedRows.forEach(rowNum => {
@@ -248,13 +274,12 @@ function validateInputs() {
     });
   }
   
-  // Alert Error Reporting
   if (failedRows.length > 0) {
     failedRows.forEach(failure => {
        sheet.getRange(failure.rowNumber, 1, 1, lastCol).setBackground(CONFIG.soft_rejection_color);
     });
     
-    let msg = `Validation Complete.\n\nStamped ${passedRows.length} successful rows.\n\nErrors inside ${failedRows.length} rows:\n`;
+    let msg = `Validation Complete.\n\nStamped ${passedRows.length} successful rows.\n\nErrors inside ${failedRows.length} failed rows:\n`;
     const limit = Math.min(failedRows.length, 5); 
     for (let i = 0; i < limit; i++) {
        msg += `Row ${failedRows[i].rowNumber}: ${failedRows[i].errors.join(", ")}\n`;
@@ -266,9 +291,9 @@ function validateInputs() {
   }
   
   if (passedRows.length === 0 && failedRows.length === 0) {
-    SpreadsheetApp.getUi().alert("No new unstamped entries found to validate.");
+    SpreadsheetApp.getUi().alert("No fully unverified entries were discovered.");
   } else {
-    SpreadsheetApp.getUi().alert(`Success: Validated and stamped ${passedRows.length} entries.`);
+    SpreadsheetApp.getUi().alert(`Success: Validated and natively stamped ${passedRows.length} unique entries.`);
   }
   
   return true;

@@ -19,12 +19,39 @@ function isSchemaLocked() {
   return PropertiesService.getScriptProperties().getProperty("SCHEMA_LOCKED") === "true";
 }
 
+/**
+ * Handles Lock functionality. Protects native Row 1 grids explicitly, 
+ * AND dynamically hooks Google's 'onChange' engine to aggressively revert any newly inserted columns.
+ */
 function toggleSchemaLock(state) {
   PropertiesService.getScriptProperties().setProperty("SCHEMA_LOCKED", state.toString());
   
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = ss.getSheets();
   
+  // Manage Structural onChange Trigger Binding
+  const triggers = ScriptApp.getUserTriggers(ss);
+  let hasTrigger = false;
+  let existingTrigger = null;
+  
+  triggers.forEach(t => {
+    if (t.getHandlerFunction() === 'handleStructuralChange') {
+      hasTrigger = true;
+      existingTrigger = t;
+    }
+  });
+  
+  try {
+    if (state && !hasTrigger) {
+      ScriptApp.newTrigger('handleStructuralChange').forSpreadsheet(ss).onChange().create();
+    } else if (!state && hasTrigger && existingTrigger) {
+      ScriptApp.deleteTrigger(existingTrigger);
+    }
+  } catch (err) {
+    // Fails silently if they lack Authorization scopes, although native header protections still fire.
+  }
+  
+  // Protect Native Rows Explicitly
+  const sheets = ss.getSheets();
   sheets.forEach(sheet => {
     if (sheet.getName() === "Schema") return;
     
@@ -72,7 +99,8 @@ function fetchAndCacheSchema(sheetName, cache) {
       let isMandatory = row[SCHEMA_MAP.MANDATORY] === true || String(row[SCHEMA_MAP.MANDATORY]).toLowerCase() === "true" || row[SCHEMA_MAP.MANDATORY] === 1;
       let isUnique = row[SCHEMA_MAP.UNIQUE] === true || String(row[SCHEMA_MAP.UNIQUE]).toLowerCase() === "true" || row[SCHEMA_MAP.UNIQUE] === 1;
       
-      rules[row[SCHEMA_MAP.COLUMN]] = {
+      const safeColName = row[SCHEMA_MAP.COLUMN] ? row[SCHEMA_MAP.COLUMN].toString().trim() : "";
+      rules[safeColName] = {
         type: row[SCHEMA_MAP.TYPE],
         is_mandatory: isMandatory,
         is_unique: isUnique
@@ -87,30 +115,23 @@ function fetchAndCacheSchema(sheetName, cache) {
   return null;
 }
 
-/**
- * Auto-Generates the Schema based on all active sheets dynamically dynamically scanning and updating.
- * Preserves existings configurations but appends new missing ones perfectly sorted by Table and Column Sequence.
- */
 function generateSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let schemaSheet = ss.getSheetByName("Schema");
   let existingData = [];
   
-  // Create Schema Table if entirely missing
   if (!schemaSheet) {
     schemaSheet = ss.insertSheet("Schema");
     schemaSheet.appendRow(["TABLE", "COLUMN", "TYPE", "DESCRIPTION", "MANDATORY", "UNIQUE"]);
     schemaSheet.getRange("A1:F1").setFontWeight("bold");
     schemaSheet.setFrozenRows(1);
   } else {
-    // Slurp all existing configurations
     const lastRow = schemaSheet.getLastRow();
     if (lastRow > 1) {
       existingData = schemaSheet.getRange(2, 1, lastRow - 1, 6).getValues();
     }
   }
 
-  // Lookup dictionary for previous configurations so we don't wipe out manual type edits
   const existingMap = {};
   existingData.forEach(row => {
     let table = row[0];
@@ -122,14 +143,13 @@ function generateSchema() {
   const finalRows = [];
   let addedCount = 0;
   
-  // Sweep ALL sheets globally
   const sheets = ss.getSheets();
   sheets.forEach(sheet => {
     const tableName = sheet.getName();
     if (tableName === "Schema") return;
     
     const lastCol = sheet.getLastColumn();
-    if (lastCol === 0) return; // Skip entirely blank sheets
+    if (lastCol === 0) return; 
     
     const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     let dataRow = new Array(lastCol).fill("");
@@ -140,12 +160,10 @@ function generateSchema() {
     headers.forEach((colName, i) => {
       if (!colName) return; 
       
-      // If we already mapped this, keep its previous configuration and push to ordered array
       if (existingMap[tableName] && existingMap[tableName][colName]) {
         finalRows.push(existingMap[tableName][colName]);
         delete existingMap[tableName][colName]; 
       } else {
-        // Discovery: We found an entirely new column missing from the active Schema!
         const cellData = dataRow[i];
         let impliedType = "STRING"; 
         
@@ -162,31 +180,26 @@ function generateSchema() {
         finalRows.push([tableName, colName, impliedType, "", isMandatory, isUnique]);
         addedCount++;
         
-        // Ensure cache bust for this sheet so onEdit picks it up instantly
         CacheService.getScriptCache().remove("schema_" + tableName);
       }
     });
 
-    // Output previously configured mappings that were later deleted from their sheets in a legacy block at the end of their group
     if (existingMap[tableName]) {
       Object.values(existingMap[tableName]).forEach(row => finalRows.push(row));
       delete existingMap[tableName];
     }
   });
 
-  // Keep legacy entirely orphaned tables at the very bottom
   Object.values(existingMap).forEach(tableMap => {
     Object.values(tableMap).forEach(row => finalRows.push(row));
   });
 
-  // Write dynamically merged sorting engine back to the sheet 
   if (finalRows.length > 0) {
     if (schemaSheet.getMaxRows() > 1) {
        schemaSheet.getRange(2, 1, schemaSheet.getMaxRows() - 1, 6).clearContent(); 
     }
     schemaSheet.getRange(2, 1, finalRows.length, 6).setValues(finalRows);
     
-    // Inject Dropdowns gracefully down the full column range
     const typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['INTEGER', 'FLOAT', 'STRING', 'TIMESTAMP'], true).build();
     schemaSheet.getRange(2, 3, finalRows.length, 1).setDataValidation(typeRule);
     
@@ -194,10 +207,9 @@ function generateSchema() {
     schemaSheet.getRange(2, 5, finalRows.length, 2).setDataValidation(boolRule);
   }
 
-  // Final Output Alert
   if (addedCount > 0) {
-    SpreadsheetApp.getUi().alert(`Schema Processed Dynamically across all sheets.\nWe cleanly appended ${addedCount} new column mappings!`);
+    SpreadsheetApp.getUi().alert(`Schema Globally Updated.\nAppended ${addedCount} newly natively mapped columns.`);
   } else {
-    SpreadsheetApp.getUi().alert(`Schema fully optimized. No unmapped headers were detected across all tables.`);
+    SpreadsheetApp.getUi().alert(`No new column data detected. Sync completely standard.`);
   }
 }
