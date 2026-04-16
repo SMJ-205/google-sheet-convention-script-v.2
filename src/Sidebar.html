@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 10px;
+        color: #333;
+      }
+      h3 {
+        margin-top: 0;
+        font-size: 16px;
+        border-bottom: 2px solid #ccc;
+        padding-bottom: 5px;
+      }
+      .section {
+        margin-bottom: 20px;
+        padding: 10px;
+        background-color: #f9f9f9;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      button {
+        background-color: #1a73e8;
+        color: white;
+        border: none;
+        padding: 10px;
+        width: 100%;
+        font-size: 14px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-top: 5px;
+      }
+      button:hover {
+        background-color: #1557b0;
+      }
+      button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .toggle-container {
+        display: flex;
+        align-items: center;
+        margin-top: 10px;
+      }
+      .toggle-label {
+        font-weight: bold;
+        margin-right: 10px;
+        flex-grow: 1;
+      }
+      /* Sweet toggle switch */
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 40px;
+        height: 22px;
+      }
+      .switch input { 
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 22px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 14px;
+        width: 14px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: #d32f2f;
+      }
+      input:checked + .slider:before {
+        transform: translateX(18px);
+      }
+      .status-text {
+        font-size: 12px;
+        color: #666;
+        margin-top: 5px;
+      }
+      #loader {
+        display: none;
+        color: #1a73e8;
+        font-size: 14px;
+        text-align: center;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Governance Engine</h3>
+    
+    <div class="section">
+      <div class="toggle-container">
+        <span class="toggle-label">Lock Schema</span>
+        <label class="switch">
+          <input type="checkbox" id="schemaLockToggle" onchange="handleToggle(this)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="status-text" id="lockStatusDesc">
+        Prevents structural column changes.
+      </div>
+    </div>
+    
+    <div class="section">
+      <button onclick="registerSheet()" id="btnRegister">Register Current Sheet</button>
+      <div class="status-text">
+        Applies 'Visual Nudge' logic to highlight unverified rows in yellow.
+      </div>
+    </div>
+    
+    <div class="section">
+      <button onclick="validateRow()" id="btnValidate">Validate Active Row</button>
+      <div class="status-text">
+        Verifies row against schema rules before stamping with an updated_at timestamp.
+      </div>
+    </div>
+
+    <div id="loader">Processing...</div>
+
+    <script>
+      // Load initial state
+      window.onload = function() {
+        google.script.run.withSuccessHandler(function(data) {
+          document.getElementById('schemaLockToggle').checked = data.locked;
+          updateLockText(data.locked);
+        }).getSidebarData();
+      };
+
+      function updateLockText(isLocked) {
+        const desc = document.getElementById('lockStatusDesc');
+        if (isLocked) {
+          desc.innerHTML = "<span style='color:#d32f2f; font-weight:bold;'>Locked:</span> Structural changes are blocked.";
+        } else {
+          desc.innerHTML = "<span style='color:#388e3c; font-weight:bold;'>Unlocked:</span> Migrations are allowed.";
+        }
+      }
+
+      function handleToggle(checkbox) {
+        showLoader();
+        disableButtons(true);
+        google.script.run
+          .withSuccessHandler(function(res) {
+             updateLockText(res);
+             hideLoader();
+             disableButtons(false);
+          })
+          .toggleSchemaLock(checkbox.checked);
+      }
+
+      function registerSheet() {
+        showLoader();
+        disableButtons(true);
+        google.script.run
+          .withSuccessHandler(function() {
+            hideLoader();
+            disableButtons(false);
+          })
+          .withFailureHandler(handleError)
+          .registerSheet();
+      }
+
+      function validateRow() {
+        showLoader();
+        disableButtons(true);
+        google.script.run
+          .withSuccessHandler(function() {
+            hideLoader();
+            disableButtons(false);
+          })
+          .withFailureHandler(handleError)
+          .validateActiveRow();
+      }
+
+      function showLoader() {
+        document.getElementById('loader').style.display = 'block';
+      }
+
+      function hideLoader() {
+        document.getElementById('loader').style.display = 'none';
+      }
+
+      function disableButtons(disabled) {
+        document.getElementById('btnRegister').disabled = disabled;
+        document.getElementById('btnValidate').disabled = disabled;
+        document.getElementById('schemaLockToggle').disabled = disabled;
+      }
+      
+      function handleError(error) {
+        hideLoader();
+        disableButtons(false);
+        alert("Error: " + error.message);
+      }
+    </script>
+  </body>
+</html>
