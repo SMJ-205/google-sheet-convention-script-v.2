@@ -97,7 +97,12 @@ function checkTriggers() {
 
   const crashErr = PropertiesService.getScriptProperties().getProperty('ONCHANGE_ERROR');
   if (crashErr) {
-    msg += '\n\n⚠ LATEST CRASH LOG:\n' + crashErr;
+    msg += '\n\n⚠ LATEST CRASH:\n' + crashErr;
+  }
+  
+  const debugLog = PropertiesService.getScriptProperties().getProperty('ONCHANGE_DEBUG');
+  if (debugLog) {
+    msg += '\n\nℹ LATEST RUN:\n' + debugLog;
   }
 
   SpreadsheetApp.getUi().alert(msg);
@@ -226,23 +231,45 @@ function _notify_(useAlerts, title, body) {
 // ═══════════════════════════════════════════════════════════
 function onChangeInstallable(e) {
   try {
+    const props = PropertiesService.getScriptProperties();
+    
+    // Log every execution to prove it fired
+    props.setProperty('ONCHANGE_DEBUG', 'Fired at ' + new Date().toLocaleTimeString() + ' | Type: ' + (e ? e.changeType : 'none'));
+
     if (!isSchemaLocked()) return;
 
-    // Use getActiveSheet() directly. e.source is UNDEFINED for onChange triggers!
-    const sheet = SpreadsheetApp.getActiveSheet();
-    if (!sheet || sheet.getName() === 'Schema') return;
+    // Guard against our own programmatic deletions
+    if (props.getProperty('GE_DELETING') === 'true') return;
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss) return;
 
     if (e.changeType === 'INSERT_COLUMN') {
-      const lastCol = sheet.getMaxColumns();
-      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-
       let deleted = false;
-      for (let c = headers.length - 1; c >= 0; c--) {
-        if ((headers[c] || '') === '') {
-          sheet.deleteColumn(c + 1);
-          deleted = true;
+
+      // getActiveSheet() is unreliable in background. Loop ALL sheets.
+      ss.getSheets().forEach(sheet => {
+        if (sheet.getName() === 'Schema') return;
+
+        const maxCols = sheet.getMaxColumns();
+        if (maxCols === 0) return;
+
+        const headers = sheet.getRange(1, 1, 1, maxCols).getValues()[0];
+
+        // Delete right-to-left
+        for (let c = headers.length - 1; c >= 0; c--) {
+          if ((headers[c] || '').toString().trim() === '') {
+            // Set guard so this delete doesn't fire a REMOVE_COLUMN alert
+            props.setProperty('GE_DELETING', 'true');
+            try {
+              sheet.deleteColumn(c + 1);
+              deleted = true;
+            } finally {
+              props.deleteProperty('GE_DELETING');
+            }
+          }
         }
-      }
+      });
 
       if (deleted) {
         SpreadsheetApp.getUi().alert(
@@ -258,7 +285,6 @@ function onChangeInstallable(e) {
       );
     }
   } catch (err) {
-    // If an error happens, write it to script properties so we can check it
     PropertiesService.getScriptProperties().setProperty('ONCHANGE_ERROR', err.toString());
   }
 }
