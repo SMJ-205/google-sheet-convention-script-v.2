@@ -29,6 +29,7 @@ function onOpen() {
     .addItem('Generate / Update Schema',  'triggerGenerateSchema')
     .addSeparator()
     .addItem('⚙ Initialize Triggers',    'initTriggers')
+    .addItem('🔍 Check Trigger Status',  'checkTriggers')
     .addToUi();
 }
 
@@ -48,9 +49,10 @@ function initTriggers() {
   const ss       = SpreadsheetApp.getActiveSpreadsheet();
   const existing = ScriptApp.getUserTriggers(ss);
 
+  // Clean up ALL known handler names (including legacy ones)
   existing.forEach(t => {
     const fn = t.getHandlerFunction();
-    if (fn === 'onEditInstallable' || fn === 'onChangeInstallable') {
+    if (['onEditInstallable','onChangeInstallable','handleStructuralChange'].includes(fn)) {
       ScriptApp.deleteTrigger(t);
     }
   });
@@ -60,8 +62,39 @@ function initTriggers() {
 
   SpreadsheetApp.getUi().alert(
     '✅ Triggers initialized!\n\n' +
-    'Full alert dialogs and column-insert blocking are now active.'
+    'Two triggers registered:\n' +
+    '• onEditInstallable (onEdit)\n' +
+    '• onChangeInstallable (onChange)\n\n' +
+    'Run "🔍 Check Trigger Status" from the menu to confirm.'
   );
+}
+
+/**
+ * Diagnostic tool — shows all registered triggers for this spreadsheet.
+ * Run this after Lock toggle to confirm onChangeInstallable is registered.
+ */
+function checkTriggers() {
+  const ss       = SpreadsheetApp.getActiveSpreadsheet();
+  const triggers = ScriptApp.getUserTriggers(ss);
+  const locked   = isSchemaLocked();
+
+  if (triggers.length === 0) {
+    SpreadsheetApp.getUi().alert(
+      '⚠️ NO TRIGGERS REGISTERED\n\n' +
+      'The onChange trigger is missing!\n\n' +
+      'To fix: run "⚙ Initialize Triggers" from the Governance Engine menu,\n' +
+      'OR toggle Lock OFF → ON from the Sidebar.'
+    );
+    return;
+  }
+
+  let msg = '🔍 Active triggers (' + triggers.length + '):\n\n';
+  triggers.forEach(t => {
+    const type = t.getEventType().toString();
+    msg += '• ' + t.getHandlerFunction() + '  [' + type + ']\n';
+  });
+  msg += '\nSchema lock state: ' + (locked ? '🔒 LOCKED' : '🔓 UNLOCKED');
+  SpreadsheetApp.getUi().alert(msg);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -189,12 +222,15 @@ function onChangeInstallable(e) {
   try {
     if (!isSchemaLocked()) return;
 
-    const sheet = SpreadsheetApp.getActiveSheet();
+    // Use e.source instead of SpreadsheetApp.getActiveSheet().
+    // In async onChange triggers, getActiveSheet() is unreliable.
+    const ss    = e.source;
+    const sheet = ss.getActiveSheet();
     if (!sheet || sheet.getName() === 'Schema') return;
 
     if (e.changeType === 'INSERT_COLUMN') {
-      // KEY: use getMaxColumns() — unlike getLastColumn(), it includes columns
-      // inserted at the far right that have no content yet.
+      // getMaxColumns() = total grid columns including newly inserted blank ones.
+      // getLastColumn() would miss columns inserted at the far right (no content yet).
       const lastCol = sheet.getMaxColumns();
       const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
 
@@ -225,7 +261,10 @@ function onChangeInstallable(e) {
       );
     }
   } catch (err) {
-    // Fail silently — trigger must never crash workflow
+    // Expose errors so we can debug — toast is safe in installable trigger context
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'onChange error: ' + err.message, '⚠ Governance Engine', 10
+    );
   }
 }
 
