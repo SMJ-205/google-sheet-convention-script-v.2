@@ -231,61 +231,31 @@ function _notify_(useAlerts, title, body) {
 // ═══════════════════════════════════════════════════════════
 function onChangeInstallable(e) {
   try {
-    const props = PropertiesService.getScriptProperties();
-    
-    // Log every execution to prove it fired
-    props.setProperty('ONCHANGE_DEBUG', 'Fired at ' + new Date().toLocaleTimeString() + ' | Type: ' + (e ? e.changeType : 'none'));
-
     if (!isSchemaLocked()) return;
-
-    // Guard against our own programmatic deletions
-    if (props.getProperty('GE_DELETING') === 'true') return;
-
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    if (!ss) return;
+    
+    const sheet = SpreadsheetApp.getActiveSheet();
+    if (sheet.getName() === 'Schema') return;
 
     if (e.changeType === 'INSERT_COLUMN') {
+      const lastCol = sheet.getMaxColumns();
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      
       let deleted = false;
-
-      // getActiveSheet() is unreliable in background. Loop ALL sheets.
-      ss.getSheets().forEach(sheet => {
-        if (sheet.getName() === 'Schema') return;
-
-        const maxCols = sheet.getMaxColumns();
-        if (maxCols === 0) return;
-
-        const headers = sheet.getRange(1, 1, 1, maxCols).getValues()[0];
-
-        // Delete right-to-left
-        for (let c = headers.length - 1; c >= 0; c--) {
-          if ((headers[c] || '').toString().trim() === '') {
-            // Set guard so this delete doesn't fire a REMOVE_COLUMN alert
-            props.setProperty('GE_DELETING', 'true');
-            try {
-              sheet.deleteColumn(c + 1);
-              deleted = true;
-            } finally {
-              props.deleteProperty('GE_DELETING');
-            }
-          }
+      // Seek backwards and delete columns that have entirely blank headers
+      for (let c = headers.length - 1; c >= 0; c--) {
+        if (headers[c] === '') {
+          sheet.deleteColumn(c + 1);
+          deleted = true;
         }
-      });
-
-      if (deleted) {
-        SpreadsheetApp.getUi().alert(
-          '⛔ SCHEMA IS LOCKED\n\n' +
-          'Inserting columns is forbidden! The unauthorized column was automatically deleted.'
-        );
       }
-
+      if (deleted) {
+        SpreadsheetApp.getUi().alert('⛔ SCHEMA IS LOCKED\n\nInserting columns is forbidden! The unauthorized column was automatically deleted.');
+      }
     } else if (e.changeType === 'REMOVE_COLUMN') {
-      SpreadsheetApp.getUi().alert(
-        '⛔ SCHEMA IS LOCKED\n\n' +
-        'Deleting columns is forbidden! Please press Undo (Ctrl+Z) immediately or risk corrupting your table.'
-      );
+      SpreadsheetApp.getUi().alert('⛔ SCHEMA IS LOCKED\n\nDeleting columns is forbidden! Please press Undo (Ctrl+Z) immediately or risk corrupting your table.');
     }
-  } catch (err) {
-    PropertiesService.getScriptProperties().setProperty('ONCHANGE_ERROR', err.toString());
+  } catch(err) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('onChange crash: ' + err.message, 'DEBUG', 10);
   }
 }
 
