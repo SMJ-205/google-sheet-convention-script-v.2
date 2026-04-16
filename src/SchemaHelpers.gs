@@ -84,10 +84,11 @@ function fetchAndCacheSchema(sheetName, cache) {
 // ─────────────────────────────────────────────
 /**
  * Scans ALL sheets:
- *   • Appends rows for new columns not yet in Schema
- *   • Removes rows for columns that no longer exist in any sheet
- *   • Preserves TYPE / MANDATORY / UNIQUE edits the user made manually
- * Result is re-written ordered by (table_name, column order on the sheet).
+ *   • Forces an updated_at column onto every sheet that lacks one
+ *   • Appends schema rows for new columns (including auto-added updated_at)
+ *   • Removes schema rows for columns deleted from their sheet
+ *   • Preserves TYPE / MANDATORY / UNIQUE the user set manually
+ * Output is ordered by (table name, column position on the sheet).
  */
 function generateSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -101,8 +102,8 @@ function generateSchema() {
     schemaSheet.setFrozenRows(1);
   }
 
-  // ── Read existing schema rows into a lookup map ──
-  const existingMap = {};   // { tableName: { colName: rowArray } }
+  // ── Read existing schema into lookup map ──
+  const existingMap = {}; // { tableName: { colName: rowArray } }
   const lastExisting = schemaSheet.getLastRow();
   if (lastExisting > 1) {
     schemaSheet.getRange(2, 1, lastExisting - 1, 6).getValues().forEach(row => {
@@ -114,8 +115,6 @@ function generateSchema() {
     });
   }
 
-  // ── Build the authoritative column set from live sheets ──
-  // orderedRows keeps insertion order = table groups, then column order in the sheet
   const orderedRows = [];
   let added = 0, removed = 0;
 
@@ -123,9 +122,20 @@ function generateSchema() {
     const tableName = sheet.getName();
     if (tableName === 'Schema') return;
 
-    const lastCol = sheet.getLastColumn();
-    if (lastCol === 0) return;
+    // ── Force-add updated_at column to the sheet if missing ──
+    let lastCol = sheet.getLastColumn();
+    if (lastCol === 0) return; // truly blank sheet, skip
 
+    const currentHeaders = lastCol > 0
+      ? sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => (h || '').toString().trim())
+      : [];
+
+    if (!currentHeaders.includes(CONFIG.updated_at_header)) {
+      sheet.getRange(1, lastCol + 1).setValue(CONFIG.updated_at_header);
+      lastCol += 1; // update count
+    }
+
+    // Re-read headers after possible insertion
     const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     let dataRow = new Array(lastCol).fill('');
     if (sheet.getLastRow() >= 2) {
@@ -140,10 +150,10 @@ function generateSchema() {
       seenCols.add(colName);
 
       if (existingMap[tableName] && existingMap[tableName][colName]) {
-        // Column still exists — preserve the user's configuration
+        // Preserve existing configuration
         orderedRows.push(existingMap[tableName][colName]);
       } else {
-        // New column detected — auto-infer type
+        // New / previously-unmapped column
         const cell = dataRow[i];
         let type = 'STRING';
         if (cell !== '' && cell !== null) {
@@ -151,28 +161,33 @@ function generateSchema() {
           else if (typeof cell === 'number') type = Number.isInteger(cell) ? 'INTEGER' : 'FLOAT';
           else if (typeof cell === 'boolean') type = 'BOOLEAN';
         }
-        if (colName === CONFIG.updated_at_header) type = 'TIMESTAMP';
-
-        const isMandatory = colName.includes('_id') || colName === 'id';
-        const isUnique    = colName === 'id';
-
-        orderedRows.push([tableName, colName, type, '', isMandatory, isUnique]);
+        // updated_at is always TIMESTAMP, never mandatory or unique
+        if (colName === CONFIG.updated_at_header) {
+          type = 'TIMESTAMP';
+          orderedRows.push([tableName, colName, type, 'Auto-managed row timestamp', false, false]);
+        } else {
+          const isMandatory = colName.includes('_id') || colName === 'id';
+          const isUnique    = colName === 'id';
+          orderedRows.push([tableName, colName, type, '', isMandatory, isUnique]);
+        }
         added++;
         CacheService.getScriptCache().remove('schema_' + tableName);
       }
     });
 
-    // Count removed columns for this table
+    // Tally columns deleted from this sheet (they won't appear in orderedRows)
     if (existingMap[tableName]) {
       Object.keys(existingMap[tableName]).forEach(col => {
-        if (!seenCols.has(col)) removed++;   // This col was deleted from the sheet
+        if (!seenCols.has(col)) removed++;
       });
     }
-    // (Deleted columns simply don't appear in orderedRows — that's the removal)
   });
 
-  // ── Write back ──
-  // Clear all data rows first, then set the fresh ordered set
+  // Append orphaned config blocks for tables/sheets that were entirely deleted
+  // (we just drop them — they don't appear in orderedRows and they are not counted
+  //  as "removed" above since that loop is per-sheet)
+
+  // ── Write merged result back ──
   if (lastExisting > 1) {
     schemaSheet.getRange(2, 1, lastExisting - 1, 6).clearContent();
   }
@@ -180,7 +195,6 @@ function generateSchema() {
   if (orderedRows.length > 0) {
     schemaSheet.getRange(2, 1, orderedRows.length, 6).setValues(orderedRows);
 
-    // Re-apply dropdown validations
     const typeRule = SpreadsheetApp.newDataValidation()
       .requireValueInList(['INTEGER', 'FLOAT', 'STRING', 'TIMESTAMP', 'BOOLEAN'], true).build();
     schemaSheet.getRange(2, 3, orderedRows.length, 1).setDataValidation(typeRule);
@@ -192,8 +206,8 @@ function generateSchema() {
 
   // ── Report ──
   const parts = [];
-  if (added)   parts.push('➕ ' + added   + ' column(s) added.');
-  if (removed) parts.push('🗑 ' + removed + ' column(s) removed.');
+  if (added)            parts.push('➕ ' + added   + ' column(s) added (including auto-injected updated_at).');
+  if (removed)          parts.push('🗑 ' + removed  + ' column(s) removed (deleted from sheet).');
   if (!added && !removed) parts.push('✅ Schema is already fully in sync.');
 
   SpreadsheetApp.getUi().alert('Schema Sync Complete\n\n' + parts.join('\n'));
