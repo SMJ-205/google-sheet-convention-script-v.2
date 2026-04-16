@@ -183,40 +183,48 @@ function _notify_(useAlerts, title, body) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  INSTALLABLE onChange — blocks column inserts & deletes
+//  INSTALLABLE onChange — blocks INSERT & DELETE column
 // ═══════════════════════════════════════════════════════════
 function onChangeInstallable(e) {
   if (!isSchemaLocked()) return;
   if (!e) return;
 
-  const sheet = SpreadsheetApp.getActiveSheet();
-  if (!sheet || sheet.getName() === 'Schema') return;
+  const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
 
   if (e.changeType === 'INSERT_COLUMN') {
-    // Detect and delete any blank-header columns (the newly inserted ones)
-    const lastCol = sheet.getLastColumn();
-    if (lastCol === 0) return;
-    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    for (let c = lastCol; c >= 1; c--) {
-      if ((headers[c - 1] || '').toString().trim() === '') {
-        sheet.deleteColumn(c);
+    // Scan ALL data sheets for blank-header columns (the newly inserted ones).
+    // We can't rely on getActiveSheet() in async trigger context.
+    let deleted = false;
+    ss.getSheets().forEach(sheet => {
+      if (sheet.getName() === 'Schema') return;
+      const lastCol = sheet.getLastColumn();
+      if (lastCol === 0) return;
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      // Delete right-to-left so indices stay valid
+      for (let c = lastCol; c >= 1; c--) {
+        if ((headers[c - 1] || '').toString().trim() === '') {
+          sheet.deleteColumn(c);
+          deleted = true;
+        }
       }
+    });
+
+    if (deleted) {
+      SpreadsheetApp.getUi().alert(
+        '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
+        'Inserting columns is not allowed while the schema is locked.\n' +
+        'The inserted column has been automatically removed.\n\n' +
+        'Unlock the schema to modify table structure.'
+      );
     }
-    SpreadsheetApp.getUi().alert(
-      '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
-      'Inserting columns is not allowed while the schema is locked.\n' +
-      'The inserted column has been automatically removed.\n\n' +
-      'Unlock the schema to modify table structure.'
-    );
 
   } else if (e.changeType === 'REMOVE_COLUMN') {
-    // Column is already deleted — Apps Script cannot programmatically undo.
-    // Alert the user to press Ctrl+Z immediately.
+    // Column is already deleted — Apps Script has no programmatic undo.
     SpreadsheetApp.getUi().alert(
       '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
       'Deleting columns is NOT allowed while the schema is locked.\n\n' +
-      '➡ Please press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
-      'the deletion before making any other changes.\n\n' +
+      '➡ Press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
+      'before making any other changes.\n\n' +
       'Unlock the schema first to perform structural changes.'
     );
   }

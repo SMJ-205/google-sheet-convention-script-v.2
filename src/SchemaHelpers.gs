@@ -44,15 +44,16 @@ function toggleSchemaLock(state) {
     }
   });
 
-  // ── onChange installable trigger (column-insert blocking) ──
-  // Called from sidebar with user auth, so trigger creation always works here.
-  const triggers    = ScriptApp.getUserTriggers(ss);
-  const changeTrig  = triggers.find(t => t.getHandlerFunction() === 'onChangeInstallable');
+  // ── onChange installable trigger (column-insert/delete blocking) ──
+  // Always delete and recreate on lock-ON so it's guaranteed active after code updates.
+  const triggers   = ScriptApp.getUserTriggers(ss);
+  const changeTrig = triggers.find(t => t.getHandlerFunction() === 'onChangeInstallable');
 
-  if (state && !changeTrig) {
+  if (changeTrig) ScriptApp.deleteTrigger(changeTrig); // Always clean up first
+
+  if (state) {
+    // Recreate fresh so any code changes take immediate effect
     ScriptApp.newTrigger('onChangeInstallable').forSpreadsheet(ss).onChange().create();
-  } else if (!state && changeTrig) {
-    ScriptApp.deleteTrigger(changeTrig);
   }
 
   return state;
