@@ -1,4 +1,4 @@
-# Sovereign Data Governance Engine (v2)
+# Sheet Convention Script : Data Governance Engine (v2)
 
 A lightweight, robust Google Apps Script framework to enforce database-like rules (data types, mandatory fields, uniqueness constraints) securely inside a normal Google Spreadsheet.
 
