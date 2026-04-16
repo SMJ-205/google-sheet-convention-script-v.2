@@ -222,15 +222,11 @@ function onChangeInstallable(e) {
   try {
     if (!isSchemaLocked()) return;
 
-    // Use e.source instead of SpreadsheetApp.getActiveSheet().
-    // In async onChange triggers, getActiveSheet() is unreliable.
-    const ss    = e.source;
-    const sheet = ss.getActiveSheet();
+    // Use getActiveSheet() directly. e.source is UNDEFINED for onChange triggers!
+    const sheet = SpreadsheetApp.getActiveSheet();
     if (!sheet || sheet.getName() === 'Schema') return;
 
     if (e.changeType === 'INSERT_COLUMN') {
-      // getMaxColumns() = total grid columns including newly inserted blank ones.
-      // getLastColumn() would miss columns inserted at the far right (no content yet).
       const lastCol = sheet.getMaxColumns();
       const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
 
@@ -244,27 +240,20 @@ function onChangeInstallable(e) {
 
       if (deleted) {
         SpreadsheetApp.getUi().alert(
-          '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
-          'Inserting columns is not allowed while the schema is locked.\n' +
-          'The inserted column has been automatically removed.\n\n' +
-          'Unlock the schema to modify table structure.'
+          '⛔ SCHEMA IS LOCKED\n\n' +
+          'Inserting columns is forbidden! The unauthorized column was automatically deleted.'
         );
       }
 
     } else if (e.changeType === 'REMOVE_COLUMN') {
       SpreadsheetApp.getUi().alert(
-        '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
-        'Deleting columns is NOT allowed while the schema is locked.\n\n' +
-        '➡ Press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
-        'before making any other changes.\n\n' +
-        'Unlock the schema first to perform structural changes.'
+        '⛔ SCHEMA IS LOCKED\n\n' +
+        'Deleting columns is forbidden! Please press Undo (Ctrl+Z) immediately or risk corrupting your table.'
       );
     }
   } catch (err) {
-    // Expose errors so we can debug — toast is safe in installable trigger context
-    SpreadsheetApp.getActiveSpreadsheet().toast(
-      'onChange error: ' + err.message, '⚠ Governance Engine', 10
-    );
+    // If an error happens, write it to script properties so we can check it
+    PropertiesService.getScriptProperties().setProperty('ONCHANGE_ERROR', err.toString());
   }
 }
 
