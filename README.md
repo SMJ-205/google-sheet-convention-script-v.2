@@ -14,7 +14,7 @@ A lightweight, robust Google Apps Script framework to enforce database-like rule
 
 ## 🛠 Setup & Installation
 
-**Copy the Code into Apps Script:**
+**Deploying to a New Spreadsheet:**
 1. Open your Google Sheet.
 2. Click **Extensions > Apps Script**.
 3. Create three files matching the names in the `src` folder:
@@ -22,34 +22,42 @@ A lightweight, robust Google Apps Script framework to enforce database-like rule
    - `SchemaHelpers.gs` (Script file)
    - `Sidebar.html` (HTML file)
 4. Copy and paste the contents from the `src/` folder of this repository into the Apps Script editor.
-5. Click **Save** and refresh your Google Sheet.
+5. Click **Save** and close the Apps Script tab.
+6. Refresh your Google Sheet browser tab.
+7. **CRITICAL FIRST STEP:** Go to the custom menu `Governance Engine -> ⚙ Initialize Triggers`. Google will ask for permission authorization. Click through the warnings to allow the script to run. This step securely wires the background protection triggers natively to your sheet.
 
 ---
 
 ## 📖 How to Use the Engine
 
 ### 1. Define the Schema (Two Options)
-The engine reads an internal configuration tab named exactly **Schema** to enforce tracking rules on your active sheets.
+The engine reads an internal configuration tab exactly named **Schema** to enforce data tracking rules on your active sheets.
 
 **Option A (Auto-Generate):**
-1. Ensure your active sheet has a title, column headers, and at least *one row* of dummy/real data.
+1. Ensure your active data sheet has a title, column headers, and at least *one row* of dummy or real data.
 2. Go to **Governance Engine > Generate / Update Schema**.
-3. The engine automatically evaluates integers, floats, dates, and text, generating the `Schema` target tab for you. 
+3. The engine automatically evaluates integers, floats, dates, and text, generating the `Schema` target tab for you. It will also automatically append an `updated_at` column if your table doesn't have one.
 
 **Option B (Manual Definition):**
 Create a `Schema` tab and structure it exactly as: `TABLE` | `COLUMN` | `TYPE` | `DESCRIPTION` | `MANDATORY` | `UNIQUE`
 
----
-
 ### 2. Enter and Process Data
-1. Start typing data into your registered sheet. As you finish editing a cell, the `onEdit` sanitization seamlessly maps currencies and date variables to standard formats.
-2. To validate rows against your unbending schema (uniqueness and mandatory constraints), select **Governance Engine > Validate Current Inputs** (also available in the Sidebar).
-   - *The engine scans the entire sheet for rows missing the `updated_at` tracker timestamp.*
-   - **Passed Rows:** Receive a permanent timestamp, finalizing them.
-   - **Failed Rows:** Are painted red (soft rejection color) and an aggregate window tells you exactly which row and column failed (e.g., "Duplicate Value: email").
+1. Start typing data into your registered sheet. As you finish editing a cell, the `onEdit` sanitization seamlessly ensures your inputs match the defined data types (`FLOAT`, `INTEGER`, `TIMESTAMP`, etc). Invalid inputs are cleanly erased natively before they pollute the database.
+2. Every valid row edit automatically stamps the `updated_at` column with the exact timestamp of modification.
+3. To validate rows against your strict schema constraints (`UNIQUE` and `MANDATORY`), open the Sidebar and click **Validate Current Inputs** (or run it from the menu).
+   - *The engine aggressively sweeps the entire sheet based on newly added unvalidated data.*
+   - **Passed Rows:** Accepted and verified cleanly.
+   - **Failed Rows:** The row will be painted with a red rejection color. A detailed, scrollable dialog widget will appear explaining exactly which row and column failed (e.g., "Row 5: The 'email' column is not unique").
 
 ### 3. Locking the Structure
-To ensure colleagues don't insert arbitrary columns:
+To ensure colleagues don't accidentally or maliciously insert arbitrary columns and break external data integrations:
 1. Open **Governance Engine > Open Sidebar**.
-2. Toggle the **Lock Schema** switch.
-3. *Effect:* Row 1 (your headers) is dynamically protected utilizing Google Sheets native protections. Because Google formulas forbid mutating a protected structural line, this natively guarantees nobody can insert or remove a column unless the lock is toggled OFF.
+2. Toggle the **Lock Schema** switch to ON.
+3. *Effect:* Row 1 (your headers) is dynamically protected utilizing Google Sheets native array protections. Simultaneously, background triggers actively watch the data grid.
+4. *Aggressive Enforcement:* If any user attempts to right-click and "Insert Column", the Governance Engine detects the unauthorized injection, **blocks it, and automatically deletes the inserted column** immediately, issuing a center-screen pop-up warning. 
+
+### 4. Diagnostics & Troubleshooting
+If you duplicate the Google Sheet, or if you feel structural protection isn't firing correctly:
+- Run **Governance Engine -> 🔍 Check Trigger Status**
+- This displays the count and status of your background triggers. You should see `onChangeInstallable` and `onEditInstallable` active.
+- If they are missing, simply run `⚙ Initialize Triggers` to clear dead triggers and bind fresh ones to your session.
