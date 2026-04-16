@@ -186,82 +186,48 @@ function _notify_(useAlerts, title, body) {
 //  INSTALLABLE onChange — blocks INSERT & DELETE column
 // ═══════════════════════════════════════════════════════════
 function onChangeInstallable(e) {
-  if (!isSchemaLocked()) return;
-  if (!e) return;
+  try {
+    if (!isSchemaLocked()) return;
 
-  // Guard: ignore REMOVE_COLUMN events that WE triggered via deleteColumn below
-  // (We set a script property flag before deleting so we can detect our own calls)
-  const props = PropertiesService.getScriptProperties();
-  if (props.getProperty('GE_DELETING') === 'true') return;
+    const sheet = SpreadsheetApp.getActiveSheet();
+    if (!sheet || sheet.getName() === 'Schema') return;
 
-  const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
+    if (e.changeType === 'INSERT_COLUMN') {
+      // KEY: use getMaxColumns() — unlike getLastColumn(), it includes columns
+      // inserted at the far right that have no content yet.
+      const lastCol = sheet.getMaxColumns();
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
 
-  if (e.changeType === 'INSERT_COLUMN') {
-    // ── Fingerprint strategy ──
-    // Compare current header count of each sheet against stored snapshot.
-    // If current > expected, a column was inserted → delete the extras.
-
-    const fpStr = props.getProperty('SCHEMA_COL_FP');
-    const fp    = fpStr ? JSON.parse(fpStr) : {};
-
-    let blocked = false;
-
-    ss.getSheets().forEach(sheet => {
-      if (sheet.getName() === 'Schema') return;
-      const sheetName = sheet.getName();
-
-      const lastCol = sheet.getLastColumn();
-      if (lastCol === 0) return;
-
-      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
-        .map(h => (h || '').toString().trim());
-
-      const expectedHeaders = fp[sheetName] || [];
-
-      if (currentHeaders.length <= expectedHeaders.length) return; // no insertion here
-
-      // Find columns that are NOT in the expected header list (these are inserted)
-      const extraCols = [];
-      for (let c = lastCol; c >= 1; c--) {
-        const h = currentHeaders[c - 1];
-        if (!expectedHeaders.includes(h)) {
-          extraCols.push(c); // right-to-left already
+      let deleted = false;
+      for (let c = headers.length - 1; c >= 0; c--) {
+        if ((headers[c] || '') === '') {
+          sheet.deleteColumn(c + 1);
+          deleted = true;
         }
       }
 
-      if (extraCols.length > 0) {
-        blocked = true;
-        // Set guard flag before deleting to prevent recursive trigger loop
-        props.setProperty('GE_DELETING', 'true');
-        try {
-          extraCols.forEach(c => sheet.deleteColumn(c));
-        } finally {
-          props.deleteProperty('GE_DELETING');
-        }
+      if (deleted) {
+        SpreadsheetApp.getUi().alert(
+          '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
+          'Inserting columns is not allowed while the schema is locked.\n' +
+          'The inserted column has been automatically removed.\n\n' +
+          'Unlock the schema to modify table structure.'
+        );
       }
-    });
 
-    if (blocked) {
+    } else if (e.changeType === 'REMOVE_COLUMN') {
       SpreadsheetApp.getUi().alert(
-        '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
-        'Inserting columns is not allowed while the schema is locked.\n' +
-        'The inserted column has been automatically removed.\n\n' +
-        'Unlock the schema first to modify table structure.'
+        '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
+        'Deleting columns is NOT allowed while the schema is locked.\n\n' +
+        '➡ Press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
+        'before making any other changes.\n\n' +
+        'Unlock the schema first to perform structural changes.'
       );
     }
-
-  } else if (e.changeType === 'REMOVE_COLUMN') {
-    // Column already deleted — no programmatic undo available in Apps Script.
-    SpreadsheetApp.getUi().alert(
-      '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
-      'Deleting columns is NOT allowed while the schema is locked.\n\n' +
-      '➡ Press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
-      'before making any other changes.\n\n' +
-      'Unlock the schema first to perform structural changes.'
-    );
+  } catch (err) {
+    // Fail silently — trigger must never crash workflow
   }
 }
-
 
 // ─────────────────────────────────────────────
 //  TYPE COERCION
