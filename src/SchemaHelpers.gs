@@ -1,215 +1,200 @@
-/**
- * Constants & Settings
- */
+// ─────────────────────────────────────────────
+//  CONFIG
+// ─────────────────────────────────────────────
 const CONFIG = {
-  updated_at_header: "updated_at",
-  yellow_color: "#FFF2CC",
-  soft_rejection_color: "#FCE8E6"
+  updated_at_header: 'updated_at',
+  yellow_color:          '#FFF2CC',
+  soft_rejection_color:  '#FCE8E6'
 };
 
-const SCHEMA_MAP = {
-  TABLE: 0,
-  COLUMN: 1,
-  TYPE: 2,
-  MANDATORY: 4,
-  UNIQUE: 5
-};
+const SCHEMA_MAP = { TABLE: 0, COLUMN: 1, TYPE: 2, DESC: 3, MANDATORY: 4, UNIQUE: 5 };
 
+// ─────────────────────────────────────────────
+//  LOCK HELPERS
+// ─────────────────────────────────────────────
 function isSchemaLocked() {
-  return PropertiesService.getScriptProperties().getProperty("SCHEMA_LOCKED") === "true";
+  return PropertiesService.getScriptProperties().getProperty('SCHEMA_LOCKED') === 'true';
 }
 
 /**
- * Handles Lock functionality. Protects native Row 1 grids explicitly, 
- * AND dynamically hooks Google's 'onChange' engine to aggressively revert any newly inserted columns.
+ * Protects Row 1 natively on all non-Schema sheets.
+ * The onChange installable trigger handles column-insert blocking.
  */
 function toggleSchemaLock(state) {
-  PropertiesService.getScriptProperties().setProperty("SCHEMA_LOCKED", state.toString());
-  
+  PropertiesService.getScriptProperties().setProperty('SCHEMA_LOCKED', state.toString());
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
-  // Manage Structural onChange Trigger Binding
-  const triggers = ScriptApp.getUserTriggers(ss);
-  let hasTrigger = false;
-  let existingTrigger = null;
-  
-  triggers.forEach(t => {
-    if (t.getHandlerFunction() === 'handleStructuralChange') {
-      hasTrigger = true;
-      existingTrigger = t;
-    }
-  });
-  
-  try {
-    if (state && !hasTrigger) {
-      ScriptApp.newTrigger('handleStructuralChange').forSpreadsheet(ss).onChange().create();
-    } else if (!state && hasTrigger && existingTrigger) {
-      ScriptApp.deleteTrigger(existingTrigger);
-    }
-  } catch (err) {
-    // Fails silently if they lack Authorization scopes, although native header protections still fire.
-  }
-  
-  // Protect Native Rows Explicitly
-  const sheets = ss.getSheets();
-  sheets.forEach(sheet => {
-    if (sheet.getName() === "Schema") return;
-    
-    const protections = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);
-    let row1Protected = false;
-    
-    protections.forEach(p => {
-       if (p.getDescription() === 'GovernanceEngine_RowLock') {
-          if (!state) p.remove(); 
-          row1Protected = true;
-       }
-    });
-    
-    if (state && !row1Protected) {
-       const lockRange = sheet.getRange("1:1"); 
-       const protection = lockRange.protect().setDescription('GovernanceEngine_RowLock');
-       
-       const me = Session.getEffectiveUser();
-       protection.addEditor(me);
-       protection.removeEditors(protection.getEditors());
-       if (protection.canDomainEdit()) {
-         protection.setDomainEdit(false);
-       }
+  ss.getSheets().forEach(sheet => {
+    if (sheet.getName() === 'Schema') return;
+
+    const existing = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);
+    let found = null;
+    existing.forEach(p => { if (p.getDescription() === 'GovernanceEngine_RowLock') found = p; });
+
+    if (state && !found) {
+      const prot = sheet.getRange('1:1').protect().setDescription('GovernanceEngine_RowLock');
+      // Restrict to only the script owner — blocks other editors from renaming headers
+      prot.addEditor(Session.getEffectiveUser());
+      prot.removeEditors(prot.getEditors());
+      if (prot.canDomainEdit()) prot.setDomainEdit(false);
+    } else if (!state && found) {
+      found.remove();
     }
   });
 
   return state;
 }
 
+// ─────────────────────────────────────────────
+//  CACHE + SCHEMA FETCH
+// ─────────────────────────────────────────────
 function fetchAndCacheSchema(sheetName, cache) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const schemaSheet = ss.getSheetByName("Schema");
-  if (!schemaSheet) return null; 
-  
+  const schemaSheet = ss.getSheetByName('Schema');
+  if (!schemaSheet) return null;
+
   const lastRow = schemaSheet.getLastRow();
-  if (lastRow < 2) return null; 
-  
-  const data = schemaSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  if (lastRow < 2) return null;
+
+  const data  = schemaSheet.getRange(2, 1, lastRow - 1, 6).getValues();
   const rules = {};
-  
-  for (let i = 0; i < data.length; i++) {
-    const row = data[i];
-    
-    if (row[SCHEMA_MAP.TABLE] === sheetName) {
-      let isMandatory = row[SCHEMA_MAP.MANDATORY] === true || String(row[SCHEMA_MAP.MANDATORY]).toLowerCase() === "true" || row[SCHEMA_MAP.MANDATORY] === 1;
-      let isUnique = row[SCHEMA_MAP.UNIQUE] === true || String(row[SCHEMA_MAP.UNIQUE]).toLowerCase() === "true" || row[SCHEMA_MAP.UNIQUE] === 1;
-      
-      const safeColName = row[SCHEMA_MAP.COLUMN] ? row[SCHEMA_MAP.COLUMN].toString().trim() : "";
-      rules[safeColName] = {
-        type: row[SCHEMA_MAP.TYPE],
-        is_mandatory: isMandatory,
-        is_unique: isUnique
-      };
-    }
-  }
-  
-  if (Object.keys(rules).length > 0) {
-    cache.put("schema_" + sheetName, JSON.stringify(rules), 21600); 
+
+  data.forEach(row => {
+    if (row[SCHEMA_MAP.TABLE] !== sheetName) return;
+    const col = (row[SCHEMA_MAP.COLUMN] || '').toString().trim();
+    if (!col) return;
+    const mandatory = row[SCHEMA_MAP.MANDATORY];
+    const unique    = row[SCHEMA_MAP.UNIQUE];
+    rules[col] = {
+      type:         (row[SCHEMA_MAP.TYPE] || 'STRING').toString().toUpperCase().trim(),
+      is_mandatory: mandatory === true || String(mandatory).toLowerCase() === 'true',
+      is_unique:    unique    === true || String(unique).toLowerCase()    === 'true'
+    };
+  });
+
+  if (Object.keys(rules).length) {
+    cache.put('schema_' + sheetName, JSON.stringify(rules), 21600);
     return rules;
   }
   return null;
 }
 
+// ─────────────────────────────────────────────
+//  GENERATE / UPDATE SCHEMA  — Full Diff-Sync
+// ─────────────────────────────────────────────
+/**
+ * Scans ALL sheets:
+ *   • Appends rows for new columns not yet in Schema
+ *   • Removes rows for columns that no longer exist in any sheet
+ *   • Preserves TYPE / MANDATORY / UNIQUE edits the user made manually
+ * Result is re-written ordered by (table_name, column order on the sheet).
+ */
 function generateSchema() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let schemaSheet = ss.getSheetByName("Schema");
-  let existingData = [];
-  
+  let schemaSheet = ss.getSheetByName('Schema');
+
+  // ── Create Schema sheet if missing ──
   if (!schemaSheet) {
-    schemaSheet = ss.insertSheet("Schema");
-    schemaSheet.appendRow(["TABLE", "COLUMN", "TYPE", "DESCRIPTION", "MANDATORY", "UNIQUE"]);
-    schemaSheet.getRange("A1:F1").setFontWeight("bold");
+    schemaSheet = ss.insertSheet('Schema');
+    schemaSheet.appendRow(['TABLE', 'COLUMN', 'TYPE', 'DESCRIPTION', 'MANDATORY', 'UNIQUE']);
+    schemaSheet.getRange('A1:F1').setFontWeight('bold');
     schemaSheet.setFrozenRows(1);
-  } else {
-    const lastRow = schemaSheet.getLastRow();
-    if (lastRow > 1) {
-      existingData = schemaSheet.getRange(2, 1, lastRow - 1, 6).getValues();
-    }
   }
 
-  const existingMap = {};
-  existingData.forEach(row => {
-    let table = row[0];
-    let col = row[1];
-    if (!existingMap[table]) existingMap[table] = {};
-    existingMap[table][col] = row;
-  });
+  // ── Read existing schema rows into a lookup map ──
+  const existingMap = {};   // { tableName: { colName: rowArray } }
+  const lastExisting = schemaSheet.getLastRow();
+  if (lastExisting > 1) {
+    schemaSheet.getRange(2, 1, lastExisting - 1, 6).getValues().forEach(row => {
+      const t = (row[SCHEMA_MAP.TABLE]  || '').toString().trim();
+      const c = (row[SCHEMA_MAP.COLUMN] || '').toString().trim();
+      if (!t || !c) return;
+      if (!existingMap[t]) existingMap[t] = {};
+      existingMap[t][c] = row;
+    });
+  }
 
-  const finalRows = [];
-  let addedCount = 0;
-  
-  const sheets = ss.getSheets();
-  sheets.forEach(sheet => {
+  // ── Build the authoritative column set from live sheets ──
+  // orderedRows keeps insertion order = table groups, then column order in the sheet
+  const orderedRows = [];
+  let added = 0, removed = 0;
+
+  ss.getSheets().forEach(sheet => {
     const tableName = sheet.getName();
-    if (tableName === "Schema") return;
-    
+    if (tableName === 'Schema') return;
+
     const lastCol = sheet.getLastColumn();
-    if (lastCol === 0) return; 
-    
+    if (lastCol === 0) return;
+
     const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    let dataRow = new Array(lastCol).fill("");
+    let dataRow = new Array(lastCol).fill('');
     if (sheet.getLastRow() >= 2) {
       dataRow = sheet.getRange(2, 1, 1, lastCol).getValues()[0];
     }
-    
-    headers.forEach((colName, i) => {
-      if (!colName) return; 
-      
+
+    const seenCols = new Set();
+
+    headers.forEach((h, i) => {
+      const colName = (h || '').toString().trim();
+      if (!colName) return;
+      seenCols.add(colName);
+
       if (existingMap[tableName] && existingMap[tableName][colName]) {
-        finalRows.push(existingMap[tableName][colName]);
-        delete existingMap[tableName][colName]; 
+        // Column still exists — preserve the user's configuration
+        orderedRows.push(existingMap[tableName][colName]);
       } else {
-        const cellData = dataRow[i];
-        let impliedType = "STRING"; 
-        
-        if (cellData !== "") {
-          if (Object.prototype.toString.call(cellData) === '[object Date]') impliedType = "TIMESTAMP";
-          else if (typeof cellData === "number") impliedType = Number.isInteger(cellData) ? "INTEGER" : "FLOAT";
-          else if (typeof cellData === "boolean") impliedType = "BOOLEAN";
+        // New column detected — auto-infer type
+        const cell = dataRow[i];
+        let type = 'STRING';
+        if (cell !== '' && cell !== null) {
+          if      (Object.prototype.toString.call(cell) === '[object Date]') type = 'TIMESTAMP';
+          else if (typeof cell === 'number') type = Number.isInteger(cell) ? 'INTEGER' : 'FLOAT';
+          else if (typeof cell === 'boolean') type = 'BOOLEAN';
         }
-        
-        if (colName === CONFIG.updated_at_header) impliedType = "TIMESTAMP";
-        let isMandatory = (colName.includes("_id") || colName === "id");
-        let isUnique = colName === "id";
-        
-        finalRows.push([tableName, colName, impliedType, "", isMandatory, isUnique]);
-        addedCount++;
-        
-        CacheService.getScriptCache().remove("schema_" + tableName);
+        if (colName === CONFIG.updated_at_header) type = 'TIMESTAMP';
+
+        const isMandatory = colName.includes('_id') || colName === 'id';
+        const isUnique    = colName === 'id';
+
+        orderedRows.push([tableName, colName, type, '', isMandatory, isUnique]);
+        added++;
+        CacheService.getScriptCache().remove('schema_' + tableName);
       }
     });
 
+    // Count removed columns for this table
     if (existingMap[tableName]) {
-      Object.values(existingMap[tableName]).forEach(row => finalRows.push(row));
-      delete existingMap[tableName];
+      Object.keys(existingMap[tableName]).forEach(col => {
+        if (!seenCols.has(col)) removed++;   // This col was deleted from the sheet
+      });
     }
+    // (Deleted columns simply don't appear in orderedRows — that's the removal)
   });
 
-  Object.values(existingMap).forEach(tableMap => {
-    Object.values(tableMap).forEach(row => finalRows.push(row));
-  });
-
-  if (finalRows.length > 0) {
-    if (schemaSheet.getMaxRows() > 1) {
-       schemaSheet.getRange(2, 1, schemaSheet.getMaxRows() - 1, 6).clearContent(); 
-    }
-    schemaSheet.getRange(2, 1, finalRows.length, 6).setValues(finalRows);
-    
-    const typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['INTEGER', 'FLOAT', 'STRING', 'TIMESTAMP'], true).build();
-    schemaSheet.getRange(2, 3, finalRows.length, 1).setDataValidation(typeRule);
-    
-    const boolRule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE'], true).build();
-    schemaSheet.getRange(2, 5, finalRows.length, 2).setDataValidation(boolRule);
+  // ── Write back ──
+  // Clear all data rows first, then set the fresh ordered set
+  if (lastExisting > 1) {
+    schemaSheet.getRange(2, 1, lastExisting - 1, 6).clearContent();
   }
 
-  if (addedCount > 0) {
-    SpreadsheetApp.getUi().alert(`Schema Globally Updated.\nAppended ${addedCount} newly natively mapped columns.`);
-  } else {
-    SpreadsheetApp.getUi().alert(`No new column data detected. Sync completely standard.`);
+  if (orderedRows.length > 0) {
+    schemaSheet.getRange(2, 1, orderedRows.length, 6).setValues(orderedRows);
+
+    // Re-apply dropdown validations
+    const typeRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['INTEGER', 'FLOAT', 'STRING', 'TIMESTAMP', 'BOOLEAN'], true).build();
+    schemaSheet.getRange(2, 3, orderedRows.length, 1).setDataValidation(typeRule);
+
+    const boolRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['TRUE', 'FALSE'], true).build();
+    schemaSheet.getRange(2, 5, orderedRows.length, 2).setDataValidation(boolRule);
   }
+
+  // ── Report ──
+  const parts = [];
+  if (added)   parts.push('➕ ' + added   + ' column(s) added.');
+  if (removed) parts.push('🗑 ' + removed + ' column(s) removed.');
+  if (!added && !removed) parts.push('✅ Schema is already fully in sync.');
+
+  SpreadsheetApp.getUi().alert('Schema Sync Complete\n\n' + parts.join('\n'));
 }
