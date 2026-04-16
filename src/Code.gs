@@ -14,9 +14,6 @@ function onOpen() {
       .addToUi();
 }
 
-/**
- * Serve Sidebar HTML
- */
 function showSidebar() {
   const html = HtmlService.createHtmlOutputFromFile('Sidebar')
       .setTitle('Data Governance Engine')
@@ -30,57 +27,72 @@ function triggerGenerateSchema() {
 
 /**
  * Instant Sanitization trigger - Auto runs on every edit
- * Blocks invalid structure changes and invalid data types on the spot.
+ * Handles cache busting for Schema updates + Type formatting.
  */
 function onEdit(e) {
-  if (!e || !e.range) return;
-  const sheet = e.range.getSheet();
-  const sheetName = sheet.getName();
-  
-  // 1. Explicitly Block Header Edits if Locked (Covers the Owner fallback)
-  if (e.range.getRow() === 1 && isSchemaLocked() && sheetName !== "Schema") {
-    e.range.setValue(e.oldValue || ""); // Undo immediately
-    SpreadsheetApp.getUi().alert("Schema is LOCKED! Column names cannot be edited or tampered with. Please unlock to modify structure.");
-    return;
-  }
-  
-  if (sheetName === "Schema") return; 
-  
-  const cache = CacheService.getScriptCache();
-  let schemaStr = cache.get("schema_" + sheetName);
-  let schema = null;
-  
-  if (!schemaStr) {
-    schema = fetchAndCacheSchema(sheetName, cache);
-    if (!schema) return; 
-  } else {
-    schema = JSON.parse(schemaStr);
-  }
-
-  const row = e.range.getRow();
-  const col = e.range.getColumn();
-  if (row === 1) return; // Handled above
-
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const colName = headers[col - 1]; 
-  
-  if (schema[colName]) {
-    const typeStr = schema[colName].type;
-    const val = e.value !== undefined ? e.value : e.range.getValue(); 
+  try {
+    if (!e || !e.range) return;
+    const sheet = e.range.getSheet();
+    const sheetName = sheet.getName();
     
-    if (val !== undefined && val !== "") {
-      const sanitized = standardizeLocales(val, typeStr);
+    // 1. Explicitly Block Header Edits if Locked
+    if (e.range.getRow() === 1 && isSchemaLocked() && sheetName !== "Schema") {
+      e.range.setValue(e.oldValue || ""); 
+      SpreadsheetApp.getActive().toast("Schema is LOCKED! Column names cannot be edited.");
+      return;
+    }
+    
+    // 2. Cache-Bust if Schema Tab is explicitly edited manually
+    if (sheetName === "Schema") {
+      const editedTable = sheet.getRange(e.range.getRow(), 1).getValue(); // Get Table Name from Col A
+      if (editedTable) {
+        CacheService.getScriptCache().remove("schema_" + editedTable);
+      }
+      return; 
+    }
+    
+    // Safety exit for mass edits that could timeout simple triggers 
+    if (e.range.getNumRows() > 1 || e.range.getNumColumns() > 1) return;
+    
+    const cache = CacheService.getScriptCache();
+    let schemaStr = cache.get("schema_" + sheetName);
+    let schema = null;
+    
+    if (!schemaStr) {
+      schema = fetchAndCacheSchema(sheetName, cache);
+      if (!schema) return; 
+    } else {
+      schema = JSON.parse(schemaStr);
+    }
+
+    const row = e.range.getRow();
+    const col = e.range.getColumn();
+    if (row === 1) return; // Ignore headers (handled above)
+
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const colName = headers[col - 1]; 
+    if (!colName) return;
+    
+    if (schema[colName]) {
+      const typeStr = schema[colName].type;
+      const val = e.value !== undefined ? e.value : e.range.getValue(); 
       
-      // Null signals a complete parsing failure (Type Mismatch)
-      if (sanitized === null) {
-        e.range.setValue(e.oldValue || ""); // Revert input natively
-        SpreadsheetApp.getActive().toast(`Type Mismatch: Column '${colName}' expects ${typeStr}. Change reverted.`, 'Governance Engine', 5);
-      } 
-      // Successful type coercion -> overwrite the raw input with standardized form
-      else if (String(sanitized) !== String(val)) {
-        e.range.setValue(sanitized);
+      if (val !== undefined && val !== "") {
+        const sanitized = standardizeLocales(val, typeStr);
+        
+        // Null means parsing failed -> Revert because it breaks the Data Type requirement
+        if (sanitized === null) {
+          e.range.setValue(e.oldValue !== undefined ? e.oldValue : ""); 
+          SpreadsheetApp.getActive().toast(`Type Mismatch: Column '${colName}' strictly expects ${typeStr}. Change reverted.`, 'Governance Engine', 5);
+        } 
+        // Valid coercion -> Replace with standard output
+        else if (String(sanitized) !== String(val)) {
+          e.range.setValue(sanitized);
+        }
       }
     }
+  } catch(err) {
+    // Fail silently in triggers so user is not annoyed, but it usually doesn't hit this.
   }
 }
 
@@ -94,11 +106,10 @@ function standardizeLocales(value, typeStr) {
   if (typeStr && typeStr.toUpperCase() === "INTEGER") {
     let parsed = Number(value);
     if (!isNaN(parsed) && Number.isInteger(parsed)) return parsed;
-    return null; // Force null on failure
+    return null; 
   } 
   else if (typeStr && typeStr.toUpperCase() === "FLOAT") {
     if (typeof value === 'number') return value;
-    // Handle Indonesian localization (dots as thousand separators, comma as decimal)
     let cleaned = String(value).replace(/\./g, '').replace(/,/g, '.');
     let parsed = parseFloat(cleaned);
     if (!isNaN(parsed)) return Number(parsed.toFixed(2));
@@ -107,7 +118,6 @@ function standardizeLocales(value, typeStr) {
   else if (typeStr && typeStr.toUpperCase() === "TIMESTAMP") {
     if (Object.prototype.toString.call(value) === '[object Date]') return value;
     
-    // Check custom DD/MM/YYYY
     const match = String(value).match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
     if (match) {
       let day = match[1].padStart(2, '0');
@@ -118,11 +128,10 @@ function standardizeLocales(value, typeStr) {
       if (!isNaN(dateObj.getTime())) return dateObj;
     }
     
-    // Fallback to JS Date evaluation
     let dateObj = new Date(value);
     if (!isNaN(dateObj.getTime())) return dateObj;
     
-    return null; // Invalid Date String
+    return null; 
   }
   else if (typeStr && typeStr.toUpperCase() === "STRING") {
     return String(value);
@@ -133,7 +142,7 @@ function standardizeLocales(value, typeStr) {
 
 /**
  * Batch Validation Logic
- * Sweeps all rows where `updated_at` is empty, validates against schema.
+ * Exclusively checks Mandatory and Unique limits. Data Types are omitted as requested.
  */
 function validateInputs() {
   const sheet = SpreadsheetApp.getActiveSheet();
@@ -207,14 +216,7 @@ function validateInputs() {
           }
           
           if (cellValue !== "" && cellValue !== null && cellValue !== undefined) {
-             // 2. Type Checking
-             const validFormat = standardizeLocales(cellValue, schema[colName].type);
-             if (validFormat === null) {
-                rowValid = false;
-                errors.push(`Invalid Type: ${colName} expects ${schema[colName].type}`);
-             }
-            
-             // 3. Uniqueness Check
+             // 2. Uniqueness Check ONLY
              if (schema[colName].is_unique) {
                const cellValStr = String(cellValue).toLowerCase();
                const colVals = colDataIndexMap[colName];
@@ -272,9 +274,6 @@ function validateInputs() {
   return true;
 }
 
-/**
- * Handlers for sidebar HTML
- */
 function getSidebarData() {
   return {
     locked: isSchemaLocked()
