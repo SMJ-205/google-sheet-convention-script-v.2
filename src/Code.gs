@@ -189,37 +189,69 @@ function onChangeInstallable(e) {
   if (!isSchemaLocked()) return;
   if (!e) return;
 
+  // Guard: ignore REMOVE_COLUMN events that WE triggered via deleteColumn below
+  // (We set a script property flag before deleting so we can detect our own calls)
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty('GE_DELETING') === 'true') return;
+
   const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
 
   if (e.changeType === 'INSERT_COLUMN') {
-    // Scan ALL data sheets for blank-header columns (the newly inserted ones).
-    // We can't rely on getActiveSheet() in async trigger context.
-    let deleted = false;
+    // ── Fingerprint strategy ──
+    // Compare current header count of each sheet against stored snapshot.
+    // If current > expected, a column was inserted → delete the extras.
+
+    const fpStr = props.getProperty('SCHEMA_COL_FP');
+    const fp    = fpStr ? JSON.parse(fpStr) : {};
+
+    let blocked = false;
+
     ss.getSheets().forEach(sheet => {
       if (sheet.getName() === 'Schema') return;
+      const sheetName = sheet.getName();
+
       const lastCol = sheet.getLastColumn();
       if (lastCol === 0) return;
-      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-      // Delete right-to-left so indices stay valid
+
+      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+        .map(h => (h || '').toString().trim());
+
+      const expectedHeaders = fp[sheetName] || [];
+
+      if (currentHeaders.length <= expectedHeaders.length) return; // no insertion here
+
+      // Find columns that are NOT in the expected header list (these are inserted)
+      const extraCols = [];
       for (let c = lastCol; c >= 1; c--) {
-        if ((headers[c - 1] || '').toString().trim() === '') {
-          sheet.deleteColumn(c);
-          deleted = true;
+        const h = currentHeaders[c - 1];
+        if (!expectedHeaders.includes(h)) {
+          extraCols.push(c); // right-to-left already
+        }
+      }
+
+      if (extraCols.length > 0) {
+        blocked = true;
+        // Set guard flag before deleting to prevent recursive trigger loop
+        props.setProperty('GE_DELETING', 'true');
+        try {
+          extraCols.forEach(c => sheet.deleteColumn(c));
+        } finally {
+          props.deleteProperty('GE_DELETING');
         }
       }
     });
 
-    if (deleted) {
+    if (blocked) {
       SpreadsheetApp.getUi().alert(
         '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
         'Inserting columns is not allowed while the schema is locked.\n' +
         'The inserted column has been automatically removed.\n\n' +
-        'Unlock the schema to modify table structure.'
+        'Unlock the schema first to modify table structure.'
       );
     }
 
   } else if (e.changeType === 'REMOVE_COLUMN') {
-    // Column is already deleted — Apps Script has no programmatic undo.
+    // Column already deleted — no programmatic undo available in Apps Script.
     SpreadsheetApp.getUi().alert(
       '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
       'Deleting columns is NOT allowed while the schema is locked.\n\n' +
@@ -229,6 +261,7 @@ function onChangeInstallable(e) {
     );
   }
 }
+
 
 // ─────────────────────────────────────────────
 //  TYPE COERCION

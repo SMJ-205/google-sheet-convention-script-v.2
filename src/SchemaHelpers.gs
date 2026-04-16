@@ -17,16 +17,16 @@ function isSchemaLocked() {
 }
 
 /**
- * Protects Row 1 on all non-Schema sheets AND installs/removes the
- * onChangeInstallable trigger so column-insert blocking is automatic.
- * Called from the sidebar — user is already authorised at this point.
+ * Protects Row 1 on all non-Schema sheets AND installs onChange trigger.
+ * Also saves a column fingerprint (header list per sheet) so INSERT_COLUMN
+ * can be detected by count difference rather than blank header hunting.
  */
 function toggleSchemaLock(state) {
   PropertiesService.getScriptProperties().setProperty('SCHEMA_LOCKED', state.toString());
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // ── Row 1 range protection (header rename blocking) ──
+  // ── Row 1 range protection ──
   ss.getSheets().forEach(sheet => {
     if (sheet.getName() === 'Schema') return;
 
@@ -44,19 +44,44 @@ function toggleSchemaLock(state) {
     }
   });
 
-  // ── onChange installable trigger (column-insert/delete blocking) ──
-  // Always delete and recreate on lock-ON so it's guaranteed active after code updates.
-  const triggers   = ScriptApp.getUserTriggers(ss);
-  const changeTrig = triggers.find(t => t.getHandlerFunction() === 'onChangeInstallable');
-
-  if (changeTrig) ScriptApp.deleteTrigger(changeTrig); // Always clean up first
-
+  // ── Save column fingerprint when locking (expected header counts per sheet) ──
   if (state) {
-    // Recreate fresh so any code changes take immediate effect
+    _saveColumnFingerprint_(ss);
+  } else {
+    PropertiesService.getScriptProperties().deleteProperty('SCHEMA_COL_FP');
+  }
+
+  // ── Always reinstall both installable triggers to guarantee freshness ──
+  const triggers = ScriptApp.getUserTriggers(ss);
+  triggers.forEach(t => {
+    const fn = t.getHandlerFunction();
+    if (fn === 'onEditInstallable' || fn === 'onChangeInstallable') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  if (state) {
+    ScriptApp.newTrigger('onEditInstallable').forSpreadsheet(ss).onEdit().create();
     ScriptApp.newTrigger('onChangeInstallable').forSpreadsheet(ss).onChange().create();
   }
 
   return state;
+}
+
+/**
+ * Saves a fingerprint of each sheet's current headers to PropertiesService.
+ * Used by onChangeInstallable to detect column insertions by count comparison.
+ */
+function _saveColumnFingerprint_(ss) {
+  const fp = {};
+  ss.getSheets().forEach(sheet => {
+    if (sheet.getName() === 'Schema') return;
+    const lastCol = sheet.getLastColumn();
+    if (lastCol === 0) return;
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+      .map(h => (h || '').toString().trim());
+    fp[sheet.getName()] = headers; // store full header list
+  });
+  PropertiesService.getScriptProperties().setProperty('SCHEMA_COL_FP', JSON.stringify(fp));
 }
 
 // ─────────────────────────────────────────────
