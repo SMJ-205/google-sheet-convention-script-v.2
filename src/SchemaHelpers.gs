@@ -17,13 +17,16 @@ function isSchemaLocked() {
 }
 
 /**
- * Protects Row 1 natively on all non-Schema sheets.
- * The onChange installable trigger handles column-insert blocking.
+ * Protects Row 1 on all non-Schema sheets AND installs/removes the
+ * onChangeInstallable trigger so column-insert blocking is automatic.
+ * Called from the sidebar — user is already authorised at this point.
  */
 function toggleSchemaLock(state) {
   PropertiesService.getScriptProperties().setProperty('SCHEMA_LOCKED', state.toString());
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // ── Row 1 range protection (header rename blocking) ──
   ss.getSheets().forEach(sheet => {
     if (sheet.getName() === 'Schema') return;
 
@@ -33,7 +36,6 @@ function toggleSchemaLock(state) {
 
     if (state && !found) {
       const prot = sheet.getRange('1:1').protect().setDescription('GovernanceEngine_RowLock');
-      // Restrict to only the script owner — blocks other editors from renaming headers
       prot.addEditor(Session.getEffectiveUser());
       prot.removeEditors(prot.getEditors());
       if (prot.canDomainEdit()) prot.setDomainEdit(false);
@@ -41,6 +43,17 @@ function toggleSchemaLock(state) {
       found.remove();
     }
   });
+
+  // ── onChange installable trigger (column-insert blocking) ──
+  // Called from sidebar with user auth, so trigger creation always works here.
+  const triggers    = ScriptApp.getUserTriggers(ss);
+  const changeTrig  = triggers.find(t => t.getHandlerFunction() === 'onChangeInstallable');
+
+  if (state && !changeTrig) {
+    ScriptApp.newTrigger('onChangeInstallable').forSpreadsheet(ss).onChange().create();
+  } else if (!state && changeTrig) {
+    ScriptApp.deleteTrigger(changeTrig);
+  }
 
   return state;
 }

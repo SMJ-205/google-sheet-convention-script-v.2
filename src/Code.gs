@@ -5,16 +5,17 @@
  *
  *  TRIGGER ARCHITECTURE (Two-Layer):
  *
- *  Layer 1 — Simple triggers (always active, zero setup):
- *    • onEdit()  — type enforcement, header lock, updated_at stamping
- *    Uses toast() for notifications (alert() is blocked in simple triggers)
+ *  Layer 1 — Simple onEdit() [ALWAYS active, zero setup]:
+ *    • Type enforcement, header lock, updated_at stamping
+ *    • Uses toast() for notifications (alert blocked in simple triggers)
+ *    • On type mismatch: clears to "" (blank) instead of reverting
  *
- *  Layer 2 — Installable triggers (set up once via menu or sidebar):
- *    • onEditInstallable()   — same as above but with alert() dialogs
- *    • onChangeInstallable() — blocks column inserts when locked
+ *  Layer 2 — Installable triggers:
+ *    • onEditInstallable()   — same + full alert() dialogs
+ *    • onChangeInstallable() — blocks column inserts (auto-installed by toggleSchemaLock)
  *
- *  IMPORTANT: Run "⚙ Initialize Triggers" from the Governance Engine menu
- *  once to activate Layer 2. Until then, Layer 1 keeps the engine running.
+ *  Run "⚙ Initialize Triggers" once to activate full alert dialogs.
+ *  Column-insert blocking is auto-wired when toggling the schema lock.
  */
 
 // ─────────────────────────────────────────────
@@ -43,15 +44,10 @@ function triggerGenerateSchema() { generateSchema(); }
 // ─────────────────────────────────────────────
 //  TRIGGER INITIALIZATION
 // ─────────────────────────────────────────────
-/**
- * Run once from the menu after deploying to a new spreadsheet.
- * Also called automatically from toggleSchemaLock() (which runs with auth).
- */
 function initTriggers() {
   const ss       = SpreadsheetApp.getActiveSpreadsheet();
   const existing = ScriptApp.getUserTriggers(ss);
 
-  // Wipe and re-create to avoid duplicates
   existing.forEach(t => {
     const fn = t.getHandlerFunction();
     if (fn === 'onEditInstallable' || fn === 'onChangeInstallable') {
@@ -69,41 +65,30 @@ function initTriggers() {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  LAYER 1 — SIMPLE onEdit (always runs, uses toast)
+//  LAYER 1 — SIMPLE onEdit (always runs)
 // ═══════════════════════════════════════════════════════════
-/**
- * This always runs. Handles core logic without UI alerts.
- * If installable triggers are active, onEditInstallable also fires
- * (providing the full alert dialog experience).
- */
 function onEdit(e) {
-  _handleEdit_(e, false); // false = use toast, not alert
+  _handleEdit_(e, false); // false = toast notifications
 }
 
 // ═══════════════════════════════════════════════════════════
 //  LAYER 2 — INSTALLABLE onEdit (requires initTriggers once)
 // ═══════════════════════════════════════════════════════════
 function onEditInstallable(e) {
-  _handleEdit_(e, true); // true = use alert dialog
+  _handleEdit_(e, true); // true = alert() dialogs
 }
 
 // ─────────────────────────────────────────────
 //  SHARED EDIT HANDLER
 // ─────────────────────────────────────────────
-/**
- * Single source of truth for all onEdit behaviour.
- * @param {Object} e   - trigger event object
- * @param {boolean} ui - true = SpreadsheetApp.getUi().alert(), false = toast()
- */
-function _handleEdit_(e, ui) {
+function _handleEdit_(e, useAlerts) {
   if (!e || !e.range) return;
 
   const sheet     = e.range.getSheet();
   const sheetName = sheet.getName();
 
-  // ── Guard: do nothing on the Schema config sheet ──
+  // ── Schema tab edit → bust cache for that table row ──
   if (sheetName === 'Schema') {
-    // Bust cache for the affected table so changes take effect immediately
     try {
       const tableCell = sheet.getRange(e.range.getRow(), 1).getValue();
       if (tableCell) CacheService.getScriptCache().remove('schema_' + tableCell);
@@ -111,17 +96,18 @@ function _handleEdit_(e, ui) {
     return;
   }
 
-  // ── Guard: ignore multi-cell changes (paste/fill) ──
+  // ── Skip multi-cell pastes in Layer 2 (handled by paste validation in validateInputs) ──
+  // Layer 1 (simple trigger) already can't reliable handle multi-cell anyway.
   if (e.range.getNumRows() > 1 || e.range.getNumColumns() > 1) return;
 
   const row = e.range.getRow();
   const col = e.range.getColumn();
-  if (row < 2) {
-    // ── Header row: block renames when locked ──
-    if (row === 1 && isSchemaLocked()) {
+
+  // ── Row 1: block header renames when locked ──
+  if (row === 1) {
+    if (isSchemaLocked()) {
       e.range.setValue(e.oldValue !== undefined ? e.oldValue : '');
-      _notify_(
-        ui,
+      _notify_(useAlerts,
         '⛔ SCHEMA IS LOCKED',
         'Column names cannot be renamed while the schema is locked.\nPlease unlock the schema first.'
       );
@@ -129,22 +115,24 @@ function _handleEdit_(e, ui) {
     return;
   }
 
+  if (row < 2) return;
+
   // ── Load schema ──
   const cache  = CacheService.getScriptCache();
   const cached = cache.get('schema_' + sheetName);
   const schema = cached ? JSON.parse(cached) : fetchAndCacheSchema(sheetName, cache);
   if (!schema) return;
 
-  // ── Identify column ──
+  // ── Resolve column name ──
   const lastCol = sheet.getLastColumn();
   if (lastCol === 0) return;
   const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   const colName = (headers[col - 1] || '').toString().trim();
 
-  // ── Skip the updated_at column itself ──
+  // ── Skip updated_at column itself ──
   if (colName === CONFIG.updated_at_header) return;
 
-  // ── Type checking ──
+  // ── Type check ──
   if (colName && schema[colName]) {
     const typeStr = (schema[colName].type || '').toUpperCase();
     const rawVal  = (e.value !== undefined && e.value !== null) ? String(e.value) : '';
@@ -153,24 +141,28 @@ function _handleEdit_(e, ui) {
       const result = standardizeLocales(rawVal, typeStr);
 
       if (result === null) {
-        // Revert the invalid input
-        e.range.setValue(e.oldValue !== undefined ? e.oldValue : '');
-        _notify_(
-          ui,
+        // FIX 1: Clear to "" instead of reverting to old value
+        e.range.setValue('');
+        _notify_(useAlerts,
           '⛔ DATA TYPE MISMATCH',
           'Column "' + colName + '" expects: ' + typeStr + '\n' +
-          '"' + rawVal + '" is not a valid ' + typeStr + '.\n' +
-          'The value has been reverted.'
+          '"' + rawVal + '" is not a valid ' + typeStr + '.\n\n' +
+          'Cell has been cleared.'
         );
-        return; // Don't stamp updated_at on a reverted edit
+        // FIX 2: Also show the persistent detail toast (always, regardless of alert mode)
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+          'Invalid ' + typeStr + ' in "' + colName + '": "' + rawVal + '" was cleared.',
+          '⛔ Type Mismatch Detail',
+          -1  // -1 = stays until user dismisses
+        );
+        return; // Don't stamp updated_at on a cleared cell
       } else if (String(result) !== rawVal) {
-        // Format the value (e.g. Indonesian float, date normalisation)
         e.range.setValue(result);
       }
     }
   }
 
-  // ── Stamp updated_at with current timestamp ──
+  // ── Stamp updated_at with current timestamp on every valid row edit ──
   const uIdx = headers.indexOf(CONFIG.updated_at_header);
   if (uIdx !== -1) {
     sheet.getRange(row, uIdx + 1).setValue(new Date());
@@ -180,12 +172,13 @@ function _handleEdit_(e, ui) {
 // ─────────────────────────────────────────────
 //  NOTIFICATION HELPER
 // ─────────────────────────────────────────────
-function _notify_(ui, title, body) {
-  const msg = title + '\n\n' + body;
-  if (ui) {
-    SpreadsheetApp.getUi().alert(msg);
+function _notify_(useAlerts, title, body) {
+  if (useAlerts) {
+    // Center-screen popup
+    SpreadsheetApp.getUi().alert(title + '\n\n' + body);
   } else {
-    SpreadsheetApp.getActiveSpreadsheet().toast(body, title, 6);
+    // Bottom-right toast (persistent, -1 = stays until dismissed)
+    SpreadsheetApp.getActiveSpreadsheet().toast(body, title, -1);
   }
 }
 
@@ -203,8 +196,6 @@ function onChangeInstallable(e) {
   if (lastCol === 0) return;
 
   const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-
-  // Delete all blank-header columns right-to-left (newly inserted ones are blank)
   for (let c = lastCol; c >= 1; c--) {
     if ((headers[c - 1] || '').toString().trim() === '') {
       sheet.deleteColumn(c);
@@ -222,34 +213,24 @@ function onChangeInstallable(e) {
 // ─────────────────────────────────────────────
 //  TYPE COERCION
 // ─────────────────────────────────────────────
-/**
- * Returns sanitized value on success, null on mismatch.
- * Input is always treated as a string (from e.value in trigger context).
- */
 function standardizeLocales(value, typeStr) {
   if (value === '' || value === null || value === undefined) return '';
 
   switch (typeStr) {
     case 'INTEGER': {
-      // Strictly digits only (optional leading minus)
       if (!/^-?\d+$/.test(value.trim())) return null;
       const n = Number(value.trim());
       return Number.isFinite(n) ? n : null;
     }
-
     case 'FLOAT': {
       const s = value.trim();
-      // Standard decimal
       if (/^-?\d+(\.\d+)?$/.test(s)) return Number(parseFloat(s).toFixed(2));
-      // Indonesian format: 1.000.000,50
       const cleaned = s.replace(/\./g, '').replace(/,/g, '.');
       if (/^-?\d+(\.\d+)?$/.test(cleaned)) return Number(parseFloat(cleaned).toFixed(2));
       return null;
     }
-
     case 'TIMESTAMP': {
       const s = value.trim();
-      // DD-MM-YYYY / DD/MM/YYYY / DD-MM-YY
       const dmy = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
       if (dmy) {
         let [, d, m, y] = dmy;
@@ -257,38 +238,33 @@ function standardizeLocales(value, typeStr) {
         const dt = new Date(`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`);
         return isNaN(dt.getTime()) ? null : dt;
       }
-      // YYYY-MM-DD
       if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
         const dt = new Date(s);
         return isNaN(dt.getTime()) ? null : dt;
       }
-      // Reject everything else (free text, random strings, etc.)
       return null;
     }
-
     case 'STRING':
       return String(value);
-
     default:
-      return value; // Unknown type — pass through
+      return value;
   }
 }
 
 // ═══════════════════════════════════════════════════════════
-//  BATCH VALIDATION  (Mandatory + Unique only)
+//  BATCH VALIDATION  (Mandatory + Unique + Paste Type Check)
 // ═══════════════════════════════════════════════════════════
 /**
- * Validates ALL rows that have at least one data cell filled.
- * updated_at is now always set by onEdit, so we validate all data rows.
+ * Validates ALL rows with at least one data cell.
+ * Also runs TYPE checking to catch paste-in data that bypassed onEdit.
  *
- * Rules checked:
- *   1. Mandatory — cell must not be empty
- *   2. Unique    — no duplicate values in that column
+ * Per-cell failing reasons are tracked:
+ *   • "mandatory"  — required field is empty
+ *   • "duplicate"  — value exists elsewhere in a unique column
+ *   • "type:FLOAT" — pasted value doesn't match expected type
  *
- * Highlighting:
- *   • Only the specific failing CELLS are painted red.
- *   • Passing rows get their cell backgrounds cleared.
- *   • Completely empty rows are skipped entirely.
+ * Only failing cells are highlighted (not full rows).
+ * Passing rows have their backgrounds cleared.
  */
 function validateInputs() {
   const sheet     = SpreadsheetApp.getActiveSheet();
@@ -314,9 +290,9 @@ function validateInputs() {
 
   const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   const data    = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-  const uIdx    = headers.indexOf(CONFIG.updated_at_header); // may be -1 if absent
+  const uIdx    = headers.indexOf(CONFIG.updated_at_header);
 
-  // Pre-build column value arrays for duplicate detection
+  // Pre-build column arrays for duplicate checking
   const colArrays = {};
   headers.forEach((h, i) => {
     const safe = (h || '').toString().trim();
@@ -324,7 +300,7 @@ function validateInputs() {
   });
 
   const passed = [];
-  const failed = []; // [{ row, failedCols: [colIdx] }]
+  const failed = []; // [{ row, cells: [{ colIdx, reason }] }]
 
   data.forEach((rowData, r) => {
     const sheetRow = r + 2;
@@ -333,40 +309,54 @@ function validateInputs() {
     const hasData = rowData.some((v, i) => i !== uIdx && v !== '' && v !== null && v !== undefined);
     if (!hasData) return;
 
-    const failedCols = [];
+    const failedCells = []; // [{ colIdx, reason }]
 
     headers.forEach((colName, c) => {
-      if (c === uIdx) return; // skip updated_at
+      if (c === uIdx) return;
       const safe = (colName || '').toString().trim();
       const val  = rowData[c];
       const rule = schema[safe];
       if (!rule) return;
 
+      const isEmpty = (val === '' || val === null || val === undefined);
+
       // 1. Mandatory
-      if (rule.is_mandatory && (val === '' || val === null || val === undefined)) {
-        failedCols.push(c);
-        return;
+      if (rule.is_mandatory && isEmpty) {
+        failedCells.push({ colIdx: c, reason: 'mandatory' });
+        return; // Can't type-check an empty cell
       }
 
-      // 2. Unique
-      if (rule.is_unique && val !== '' && val !== null && val !== undefined) {
-        const count = (colArrays[safe] || []).filter(v => v === String(val).toLowerCase().trim()).length;
-        if (count > 1) failedCols.push(c);
+      if (!isEmpty) {
+        // 2. Type check (catches paste-in values that bypassed onEdit)
+        const typeStr  = (rule.type || '').toUpperCase();
+        const strVal   = String(val).trim();
+        // Skip type check on updated_at and BOOLEAN
+        if (typeStr && typeStr !== 'BOOLEAN' && typeStr !== 'STRING') {
+          const coerced = standardizeLocales(strVal, typeStr);
+          if (coerced === null) {
+            failedCells.push({ colIdx: c, reason: 'type:' + typeStr });
+          }
+        }
+
+        // 3. Unique
+        if (rule.is_unique) {
+          const count = (colArrays[safe] || []).filter(v => v === String(val).toLowerCase().trim()).length;
+          if (count > 1) failedCells.push({ colIdx: c, reason: 'not unique' });
+        }
       }
     });
 
-    if (failedCols.length === 0) passed.push(sheetRow);
-    else failed.push({ row: sheetRow, failedCols });
+    if (failedCells.length === 0) passed.push(sheetRow);
+    else failed.push({ row: sheetRow, cells: failedCells });
   });
 
-  // ── Clear backgrounds for all inspected rows, then paint failures ──
-  [...passed, ...failed.map(f => f.row)].forEach(r => {
-    sheet.getRange(r, 1, 1, lastCol).setBackground(null);
-  });
+  // ── Clear backgrounds for all inspected rows, then paint failing cells ──
+  const allRows = [...passed, ...failed.map(f => f.row)];
+  allRows.forEach(r => sheet.getRange(r, 1, 1, lastCol).setBackground(null));
 
   failed.forEach(f => {
-    f.failedCols.forEach(c => {
-      sheet.getRange(f.row, c + 1).setBackground(CONFIG.soft_rejection_color);
+    f.cells.forEach(fc => {
+      sheet.getRange(f.row, fc.colIdx + 1).setBackground(CONFIG.soft_rejection_color);
     });
   });
 
@@ -376,21 +366,35 @@ function validateInputs() {
     return true;
   }
 
-  let msg = 'Validation complete.\n\n'
-          + '✅  Passed: ' + passed.length + ' row(s)\n'
-          + '❌  Failed: ' + failed.length + ' row(s)\n';
+  const toColLetter = n => String.fromCharCode(64 + n); // 1→A
 
+  // Center-screen summary popup
+  let alertMsg = 'Validation complete.\n\n'
+              + '✅  Passed: ' + passed.length + ' row(s)\n'
+              + '❌  Failed: ' + failed.length + ' row(s)';
   if (failed.length) {
-    msg += '\nFailed rows:\n';
-    const toCol = n => String.fromCharCode(64 + n); // 1→A, 2→B …
+    alertMsg += '\n\nFailed rows:\n';
     failed.slice(0, 8).forEach(f => {
-      const cells = f.failedCols.map(c => toCol(c + 1) + f.row).join(', ');
-      msg += '  Row ' + f.row + ': ' + cells + '\n';
+      const cellRefs = f.cells.map(fc => toColLetter(fc.colIdx + 1) + f.row + ' (' + fc.reason + ')').join(', ');
+      alertMsg += '  Row ' + f.row + ': ' + cellRefs + '\n';
     });
-    if (failed.length > 8) msg += '  ...and ' + (failed.length - 8) + ' more rows.';
+    if (failed.length > 8) alertMsg += '  ...and ' + (failed.length - 8) + ' more.';
+  }
+  SpreadsheetApp.getUi().alert(alertMsg);
+
+  // Persistent bottom-right toast with full detail (stays until dismissed)
+  if (failed.length) {
+    let toastBody = 'Errors found in ' + failed.length + ' row(s):\n';
+    failed.slice(0, 10).forEach(f => {
+      f.cells.forEach(fc => {
+        const col = headers[fc.colIdx] || ('Col ' + (fc.colIdx + 1));
+        toastBody += '• Row ' + f.row + ' / ' + col + ': ' + fc.reason + '\n';
+      });
+    });
+    if (failed.length > 10) toastBody += '...see highlighted cells for more.';
+    SpreadsheetApp.getActiveSpreadsheet().toast(toastBody, '❌ Validation Errors — Click to dismiss', -1);
   }
 
-  SpreadsheetApp.getUi().alert(msg);
   return failed.length === 0;
 }
 
