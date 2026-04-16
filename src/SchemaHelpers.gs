@@ -51,18 +51,9 @@ function toggleSchemaLock(state) {
     PropertiesService.getScriptProperties().deleteProperty('SCHEMA_COL_FP');
   }
 
-  // ── Always reinstall both installable triggers to guarantee freshness ──
-  const triggers = ScriptApp.getUserTriggers(ss);
-  triggers.forEach(t => {
-    const fn = t.getHandlerFunction();
-    if (fn === 'onEditInstallable' || fn === 'onChangeInstallable') {
-      ScriptApp.deleteTrigger(t);
-    }
-  });
-  if (state) {
-    ScriptApp.newTrigger('onEditInstallable').forSpreadsheet(ss).onEdit().create();
-    ScriptApp.newTrigger('onChangeInstallable').forSpreadsheet(ss).onChange().create();
-  }
+  // NOTE: We no longer dynamically create/delete triggers here. 
+  // Modifying triggers frequently via Sidebar causes silent failures in Google's backend.
+  // Triggers are created once via initTriggers() and simply return early if state is false.
 
   return state;
 }
