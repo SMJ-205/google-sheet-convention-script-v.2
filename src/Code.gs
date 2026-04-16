@@ -183,31 +183,43 @@ function _notify_(useAlerts, title, body) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  INSTALLABLE onChange — blocks column inserts when locked
+//  INSTALLABLE onChange — blocks column inserts & deletes
 // ═══════════════════════════════════════════════════════════
 function onChangeInstallable(e) {
   if (!isSchemaLocked()) return;
-  if (!e || e.changeType !== 'INSERT_COLUMN') return;
+  if (!e) return;
 
   const sheet = SpreadsheetApp.getActiveSheet();
   if (!sheet || sheet.getName() === 'Schema') return;
 
-  const lastCol = sheet.getLastColumn();
-  if (lastCol === 0) return;
-
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  for (let c = lastCol; c >= 1; c--) {
-    if ((headers[c - 1] || '').toString().trim() === '') {
-      sheet.deleteColumn(c);
+  if (e.changeType === 'INSERT_COLUMN') {
+    // Detect and delete any blank-header columns (the newly inserted ones)
+    const lastCol = sheet.getLastColumn();
+    if (lastCol === 0) return;
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    for (let c = lastCol; c >= 1; c--) {
+      if ((headers[c - 1] || '').toString().trim() === '') {
+        sheet.deleteColumn(c);
+      }
     }
-  }
+    SpreadsheetApp.getUi().alert(
+      '⛔ SCHEMA IS LOCKED — Column Insert Blocked\n\n' +
+      'Inserting columns is not allowed while the schema is locked.\n' +
+      'The inserted column has been automatically removed.\n\n' +
+      'Unlock the schema to modify table structure.'
+    );
 
-  SpreadsheetApp.getUi().alert(
-    '⛔ SCHEMA IS LOCKED\n\n' +
-    'Inserting columns is not allowed while the schema is locked.\n' +
-    'The inserted column has been automatically removed.\n\n' +
-    'Unlock the schema to modify table structure.'
-  );
+  } else if (e.changeType === 'REMOVE_COLUMN') {
+    // Column is already deleted — Apps Script cannot programmatically undo.
+    // Alert the user to press Ctrl+Z immediately.
+    SpreadsheetApp.getUi().alert(
+      '⛔ SCHEMA IS LOCKED — Column Delete Detected!\n\n' +
+      'Deleting columns is NOT allowed while the schema is locked.\n\n' +
+      '➡ Please press Ctrl+Z (or ⌘+Z on Mac) RIGHT NOW to undo\n' +
+      'the deletion before making any other changes.\n\n' +
+      'Unlock the schema first to perform structural changes.'
+    );
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -382,17 +394,17 @@ function validateInputs() {
   }
   SpreadsheetApp.getUi().alert(alertMsg);
 
-  // Persistent bottom-right toast with full detail (stays until dismissed)
+  // Detailed scrollable dialog (non-blocking — user can dismiss and work in sheet)
   if (failed.length) {
-    let toastBody = 'Errors found in ' + failed.length + ' row(s):\n';
-    failed.slice(0, 10).forEach(f => {
+    const errorLines = [];
+    failed.forEach(f => {
       f.cells.forEach(fc => {
-        const col = headers[fc.colIdx] || ('Col ' + (fc.colIdx + 1));
-        toastBody += '• Row ' + f.row + ' / ' + col + ': ' + fc.reason + '\n';
+        const colName = headers[fc.colIdx] || ('Column ' + (fc.colIdx + 1));
+        const reasonLabel = _friendlyReason_(fc.reason);
+        errorLines.push('Row ' + f.row + ' &rarr; <b>' + colName + '</b>: ' + reasonLabel);
       });
     });
-    if (failed.length > 10) toastBody += '...see highlighted cells for more.';
-    SpreadsheetApp.getActiveSpreadsheet().toast(toastBody, '❌ Validation Errors — Click to dismiss', -1);
+    _showErrorDialog_('Validation Errors (' + failed.length + ' row(s) failed)', errorLines);
   }
 
   return failed.length === 0;
@@ -400,4 +412,48 @@ function validateInputs() {
 
 function getSidebarData() {
   return { locked: isSchemaLocked() };
+}
+
+// ─────────────────────────────────────────────
+//  ERROR DIALOG HELPERS
+// ─────────────────────────────────────────────
+
+/**
+ * Shows a scrollable, non-blocking modeless dialog with error details.
+ * The user can dismiss it and continue working in the sheet.
+ */
+function _showErrorDialog_(title, errorLines) {
+  const rows = errorLines.map(l =>
+    '<li style="padding:6px 0;border-bottom:1px solid #f0f0f0;line-height:1.5">' + l + '</li>'
+  ).join('');
+
+  const html =
+    '<div style="font-family:Google Sans,Arial,sans-serif;padding:16px 20px;">' +
+    '  <h3 style="margin:0 0 12px;color:#c62828;font-size:15px;">' + title + '</h3>' +
+    '  <ul style="margin:0;padding-left:18px;list-style:disc;">' + rows + '</ul>' +
+    '  <div style="margin-top:16px;text-align:right;">' +
+    '    <button onclick="google.script.host.close()" ' +
+    '      style="background:#1a73e8;color:#fff;border:none;padding:8px 20px;' +
+    '             border-radius:4px;font-size:13px;cursor:pointer;">Dismiss</button>' +
+    '  </div>' +
+    '</div>';
+
+  const output = HtmlService.createHtmlOutput(html)
+    .setWidth(480)
+    .setHeight(Math.min(120 + errorLines.length * 36, 480));
+
+  SpreadsheetApp.getUi().showModelessDialog(output, title);
+}
+
+/**
+ * Converts internal reason codes to user-friendly labels.
+ */
+function _friendlyReason_(reason) {
+  if (reason === 'mandatory')  return '<span style="color:#c62828">⚠ Field is mandatory — cannot be empty</span>';
+  if (reason === 'not unique') return '<span style="color:#e65100">⚠ Value is not unique — duplicate found</span>';
+  if (reason.startsWith('type:')) {
+    const t = reason.replace('type:', '');
+    return '<span style="color:#6a1b9a">⚠ Invalid type — expected ' + t + '</span>';
+  }
+  return reason;
 }
