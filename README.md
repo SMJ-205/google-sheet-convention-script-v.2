@@ -16,7 +16,7 @@ A lightweight, robust Google Apps Script framework to enforce database-like rule
 
 **Alternative: Quick Start Template**
 If you want to skip manual installation, you can directly copy this pre-configured template which already has the Governance Engine code installed:
-👉 [**Sovereign Data Governance Engine Template**](https://docs.google.com/spreadsheets/d/1oNE3USgnBD-tW0QfLguTUBUhOtpSInzs0PnYqkguvok/edit?gid=1467061432#gid=1467061432)
+👉 [**Data Governance Engine Template**](https://docs.google.com/spreadsheets/d/1oNE3USgnBD-tW0QfLguTUBUhOtpSInzs0PnYqkguvok/edit?gid=1467061432#gid=1467061432)
 *(Click `File > Make a copy` to save it to your own Google Drive)*
 
 **Deploying to a New Spreadsheet (Manual Setup):**
