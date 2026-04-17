@@ -27,6 +27,7 @@ function onOpen() {
     .addItem("Open Sidebar", "showSidebar")
     .addItem("Validate Current Inputs", "validateInputs")
     .addItem("Generate / Update Schema", "triggerGenerateSchema")
+    .addItem("🧹 Clear Cache & Reload Schema", "clearAllCaches")
     .addSeparator()
     .addItem("⚙ Initialize Triggers", "initTriggers")
     .addItem("🔍 Check Trigger Status", "checkTriggers")
@@ -42,6 +43,18 @@ function showSidebar() {
 
 function triggerGenerateSchema() {
   generateSchema();
+}
+
+// ─────────────────────────────────────────────
+//  CACHE CLEARING UTILITY
+// ─────────────────────────────────────────────
+function clearAllCaches() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const cache = CacheService.getScriptCache();
+  ss.getSheets().forEach(sheet => {
+    cache.remove("schema_" + sheet.getName());
+  });
+  SpreadsheetApp.getUi().alert("✅ All Caches have been forcefully cleared!\n\nThe next data entry will rebuild the rules natively from your Schema tab.");
 }
 
 // ─────────────────────────────────────────────
