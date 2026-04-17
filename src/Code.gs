@@ -342,6 +342,38 @@ function onChangeInstallable(e) {
         "⛔ SCHEMA IS LOCKED\n\n" +
           "Deleting columns is forbidden! Please press Undo (Ctrl+Z) immediately or risk corrupting your table.",
       );
+    } else if (e.changeType === "OTHER") {
+      const fpStr = props.getProperty("SCHEMA_COL_FP");
+      if (fpStr) {
+        try {
+          const fp = JSON.parse(fpStr);
+          let moved = false;
+          
+          ss.getSheets().forEach((sheet) => {
+            if (sheet.getName() === "Schema") return;
+            const originalHeaders = fp[sheet.getName()];
+            if (!originalHeaders) return;
+
+            const maxCols = sheet.getMaxColumns();
+            if (maxCols === 0) return;
+
+            const currentHeaders = sheet.getRange(1, 1, 1, maxCols).getValues()[0].map(h => (h || '').toString().trim());
+
+            // A Drag & Drop (Move) retains the same number of columns but shuffles their order
+            if (originalHeaders.length === currentHeaders.length) {
+              const diff = originalHeaders.some((h, i) => h !== currentHeaders[i]);
+              if (diff) moved = true;
+            }
+          });
+
+          if (moved) {
+            SpreadsheetApp.getUi().alert(
+              "⛔ SCHEMA IS LOCKED\n\n" +
+                "Reordering columns is forbidden! Please press Undo (Ctrl+Z) immediately to restore data integrity.",
+            );
+          }
+        } catch (_) {}
+      }
     }
   } catch (err) {
     PropertiesService.getScriptProperties().setProperty(
