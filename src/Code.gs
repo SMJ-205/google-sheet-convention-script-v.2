@@ -359,10 +359,11 @@ function onChangeInstallable(e) {
 
             const currentHeaders = sheet.getRange(1, 1, 1, maxCols).getValues()[0].map(h => (h || '').toString().trim());
 
-            // A Drag & Drop (Move) retains the same number of columns but shuffles their order
             if (originalHeaders.length === currentHeaders.length) {
               const diff = originalHeaders.some((h, i) => h !== currentHeaders[i]);
-              if (diff) moved = true;
+              if (diff) {
+                moved = true;
+              }
             }
           });
 
@@ -371,8 +372,18 @@ function onChangeInstallable(e) {
               "⛔ SCHEMA IS LOCKED\n\n" +
                 "Reordering columns is forbidden! Please press Undo (Ctrl+Z) immediately to restore data integrity.",
             );
+          } else {
+            SpreadsheetApp.getActiveSpreadsheet().toast(
+              "No reorder detected. Length equality checked.",
+              "Debug INFO",
+            );
           }
         } catch (_) {}
+      } else {
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+          "Fingerprint memory missing. Please toggle Lock OFF then ON.",
+          "Debug INFO",
+        );
       }
     }
   } catch (err) {
