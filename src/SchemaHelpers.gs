@@ -66,9 +66,9 @@ function _saveColumnFingerprint_(ss) {
   const fp = {};
   ss.getSheets().forEach(sheet => {
     if (sheet.getName() === 'Schema') return;
-    const lastCol = sheet.getLastColumn();
-    if (lastCol === 0) return;
-    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+    const maxCols = sheet.getMaxColumns();
+    if (maxCols === 0) return;
+    const headers = sheet.getRange(1, 1, 1, maxCols).getValues()[0]
       .map(h => (h || '').toString().trim());
     fp[sheet.getName()] = headers; // store full header list
   });
