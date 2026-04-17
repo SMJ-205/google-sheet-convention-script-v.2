@@ -359,12 +359,19 @@ function standardizeLocales(value, typeStr) {
 
   switch (typeStr) {
     case "INTEGER": {
-      if (!/^-?\d+$/.test(value.trim())) return null;
-      const n = Number(value.trim());
+      if (typeof value === "number") {
+        return Number.isInteger(value) ? value : null;
+      }
+      const s = String(value).trim();
+      if (!/^-?\d+$/.test(s)) return null;
+      const n = Number(s);
       return Number.isFinite(n) ? n : null;
     }
     case "FLOAT": {
-      const s = value.trim();
+      if (typeof value === "number") {
+        return Number(value.toFixed(2));
+      }
+      const s = String(value).trim();
       if (/^-?\d+(\.\d+)?$/.test(s)) return Number(parseFloat(s).toFixed(2));
       const cleaned = s.replace(/\./g, "").replace(/,/g, ".");
       if (/^-?\d+(\.\d+)?$/.test(cleaned))
