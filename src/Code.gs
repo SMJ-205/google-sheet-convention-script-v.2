@@ -237,16 +237,20 @@ function _handleEdit_(e, useAlerts) {
           -1, // -1 = stays until user dismisses
         );
         return; // Don't stamp updated_at on a cleared cell
-      } else if (String(result) !== rawVal) {
         e.range.setValue(result);
+        if (typeStr === "TIMESTAMP") {
+          // Force visual rendering to YYYY-MM-DD so region settings don't override output
+          e.range.setNumberFormat("yyyy-mm-dd");
+        }
       }
     }
   }
 
   // ── Stamp updated_at with current timestamp on every valid row edit ──
+  // ── Stamp updated_at with current timestamp on every valid row edit ──
   const uIdx = headers.indexOf(CONFIG.updated_at_header);
   if (uIdx !== -1) {
-    sheet.getRange(row, uIdx + 1).setValue(new Date());
+    sheet.getRange(row, uIdx + 1).setValue(new Date()).setNumberFormat("yyyy-mm-dd hh:mm:ss");
   }
 }
 
