@@ -355,18 +355,42 @@ function standardizeLocales(value, typeStr) {
       return null;
     }
     case "TIMESTAMP": {
-      const s = value.trim();
+      // If it's already a JS Date object (e.g. from Sheets), handle it natively
+      if (value instanceof Date) {
+        if (isNaN(value.getTime())) return null;
+        const y = value.getFullYear();
+        const m = String(value.getMonth() + 1).padStart(2, "0");
+        const d = String(value.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      const s = String(value).trim();
+      
+      // If it's ALREADY exactly YYYY-MM-DD, accept it immediately
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        return s;
+      }
+      
+      // Handle the strict required style: DD-MM-YYYY, DD/MM/YY, DD/MM/YYYY, etc.
+      // We assume Day is FIRST, Month is SECOND.
       const dmy = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})$/);
       if (dmy) {
         let [, d, m, y] = dmy;
         if (y.length === 2) y = "20" + y;
-        const dt = new Date(`${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`);
-        return isNaN(dt.getTime()) ? null : dt;
+        
+        // Return strict YYYY-MM-DD string
+        return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
       }
-      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-        const dt = new Date(s);
-        return isNaN(dt.getTime()) ? null : dt;
+      
+      // Try native string parsing as a fallback (Google Sheets standard text parse)
+      const dt = new Date(s);
+      if (!isNaN(dt.getTime())) {
+        const y = dt.getFullYear();
+        const m = String(dt.getMonth() + 1).padStart(2, "0");
+        const d = String(dt.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
       }
+
       return null;
     }
     case "STRING":
@@ -463,10 +487,11 @@ function validateInputs() {
       if (!isEmpty) {
         // 2. Type check (catches paste-in values that bypassed onEdit)
         const typeStr = (rule.type || "").toUpperCase();
-        const strVal = String(val).trim();
+        
         // Skip type check on updated_at and BOOLEAN
         if (typeStr && typeStr !== "BOOLEAN" && typeStr !== "STRING") {
-          const coerced = standardizeLocales(strVal, typeStr);
+          // IMPORTANT: pass 'val' directly (not String(val)) so Date objects stay Date objects
+          const coerced = standardizeLocales(val, typeStr);
           if (coerced === null) {
             failedCells.push({ colIdx: c, reason: "type:" + typeStr });
           }
